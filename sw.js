@@ -14,6 +14,7 @@ const APP_SHELL = [
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',
+  'screenshots/narrow.png',
   'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js',
   'https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap',
 ];
