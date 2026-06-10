@@ -6,9 +6,7 @@ numbers hit hard. Drain the enemy castle to win.
 
 ## Play
 
-- **`index.html`** — the full game (loads fonts/libs from CDNs). Serve the folder
-  with any static server, or enable GitHub Pages on this repo and play at your
-  Pages URL. Phone-first: open it on a mobile browser.
+- **`index.html`** — the full game loads from https://pkolarov.github.io/cortexclash/ . Phone-first: open it on a mobile browser.
 - **`cortex-clash-standalone.html`** — single self-contained file, works offline
   (online multiplayer still needs internet for matchmaking).
 
