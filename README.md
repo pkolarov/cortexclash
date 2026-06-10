@@ -6,7 +6,12 @@ numbers hit hard. Drain the enemy castle to win.
 
 ## Play
 
-- **`index.html`** — the full game loads from https://pkolarov.github.io/cortexclash/ . Phone-first: open it on a mobile browser.
+- **`index.html`** — the full game. Serve the folder with any static server, or
+  enable GitHub Pages on this repo and play at your Pages URL. Phone-first.
+- **Install as an app (PWA):** open the Pages URL in Android Chrome → menu →
+  **"Install app"** (or "Add to Home screen"). Runs fullscreen with its own icon
+  and works offline after the first load. iOS: Safari → Share → "Add to Home
+  Screen". Requires HTTPS — GitHub Pages provides this automatically.
 - **`cortex-clash-standalone.html`** — single self-contained file, works offline
   (online multiplayer still needs internet for matchmaking).
 
@@ -39,6 +44,7 @@ numbers hit hard. Drain the enemy castle to win.
 | `game/main.js` | Input, screen routing, main loop |
 | `game/boards.js` | Arena definitions |
 | `game/sound.js` | WebAudio chiptune SFX |
-| `game/tweaks-panel.jsx` | Dev-only tuning panel (inactive outside the design tool) |
+| `manifest.webmanifest` + `sw.js` + `icons/` | PWA: install-to-home-screen + offline cache |
 
-No build step — plain ES5-ish JavaScript, open `index.html` and play.
+When you change game files, bump the `CACHE` version string in `sw.js` so
+installed apps pick up the update.
