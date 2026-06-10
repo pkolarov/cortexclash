@@ -688,7 +688,7 @@ function drawTitle(ctx, boardIdx, t) {
 
   glowText(ctx, 'CHOOSE ARENA', W / 2, 540, 24, '#ffd23f', 10);
 
-  const bw = 880, bh = 96, gap = 12;
+  const bw = 880, bh = 88, gap = 10;
   let y = 585;
   BOARDS.forEach((b, i) => {
     const x = (W - bw) / 2;
@@ -701,7 +701,7 @@ function drawTitle(ctx, boardIdx, t) {
     rr(ctx, x, y, bw, bh, 16);
     ctx.fill(); ctx.stroke();
     ctx.restore();
-    drawMiniMap(ctx, b, x + 28, y + 9, 6);
+    drawMiniMap(ctx, b, x + 28, y + 5, 6);
     glowText(ctx, b.name, x + 120, y + 36, 22, on ? '#19e6ff' : '#aebcff', on ? 10 : 0, 'left');
     ctx.font = '15px ' + FONT;
     ctx.fillStyle = 'rgba(232,246,255,0.5)';
@@ -723,9 +723,9 @@ function drawTitle(ctx, boardIdx, t) {
     ['CAMP THE ENEMY CASTLE TO DRAIN IT', '#ffd23f'],
   ];
   lines.forEach(([txt, c], i) => {
-    glowText(ctx, txt, W / 2, y + i * 38, 18, c, 5);
+    glowText(ctx, txt, W / 2, y + i * 32, 18, c, 5);
   });
-  y += lines.length * 38 + 22;
+  y += lines.length * 32 + 18;
 
   // power-up legend — what each pickup actually does
   const legend = [
@@ -734,7 +734,7 @@ function drawTitle(ctx, boardIdx, t) {
     ['shield', 'SHIELD', 'BLOCKS ONE ENEMY HIT'],
     ['heart', 'REPAIR', 'YOUR CASTLE +12 ENERGY'],
   ];
-  const cw = 480, ch = 66, lgx = 16, lgy = 12;
+  const cw = 480, ch = 60, lgx = 16, lgy = 10;
   legend.forEach(([type, label, desc], i) => {
     const x = W / 2 + (i % 2 === 0 ? -cw - lgx / 2 : lgx / 2);
     const cy = y + Math.floor(i / 2) * (ch + lgy);
@@ -775,19 +775,37 @@ function drawTitle(ctx, boardIdx, t) {
   });
   y += 2 * ch + lgy + 16;
 
-  const sw2 = 640, sh2 = 104;
-  drawBigBtn(ctx, W / 2 - sw2 / 2, y, sw2, sh2, '▶ LOCAL BATTLE', '#52ff9d', t);
-  UI.buttons.push({ x: W / 2 - sw2 / 2, y, w: sw2, h: sh2, action: ACTIONS.start });
-  y += sh2 + 18;
+  const sw2 = 640, sh2 = 96;
+  const bx0 = W / 2 - sw2 / 2;
   const hw = (sw2 - 18) / 2;
-  drawBigBtn(ctx, W / 2 - sw2 / 2, y, hw, 92, 'HOST ONLINE', '#19e6ff', t, true, 20);
-  UI.buttons.push({ x: W / 2 - sw2 / 2, y, w: hw, h: 92, action: ACTIONS.createOnline });
-  drawBigBtn(ctx, W / 2 + sw2 / 2 - hw, y, hw, 92, 'JOIN ONLINE', '#ff3df0', t, true, 20);
-  UI.buttons.push({ x: W / 2 + sw2 / 2 - hw, y, w: hw, h: 92, action: ACTIONS.joinOnline });
-  ctx.font = '15px ' + FONT;
+  drawBigBtn(ctx, bx0, y, sw2, sh2, '▶ LOCAL BATTLE', '#52ff9d', t);
+  UI.buttons.push({ x: bx0, y, w: sw2, h: sh2, action: ACTIONS.start });
+  y += sh2 + 12;
+  // single player vs AI
+  drawBigBtn(ctx, bx0, y, hw, 92, 'VS COMPUTER', '#ffd23f', t, true, 20);
+  UI.buttons.push({ x: bx0, y, w: hw, h: 92, action: ACTIONS.startBot });
+  drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 92, 'VS CLAUDE', '#b18cff', t, true, 20);
+  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 92, action: ACTIONS.startClaude });
+  y += 92 + 6;
+  // difficulty + model chips
+  ctx.font = '14px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,210,63,0.8)';
+  ctx.fillText('LEVEL: ' + AI.diffLabel() + ' ▸', bx0 + hw / 2, y + 16);
+  UI.buttons.push({ x: bx0, y, w: hw, h: 32, action: ACTIONS.cycleDiff });
+  ctx.fillStyle = 'rgba(177,140,255,0.8)';
+  ctx.fillText('MODEL: ' + AI.modelLabel() + ' ▸', bx0 + sw2 - hw / 2, y + 16);
+  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 32, action: ACTIONS.cycleModel });
+  y += 32 + 12;
+  drawBigBtn(ctx, bx0, y, hw, 92, 'HOST ONLINE', '#19e6ff', t, true, 20);
+  UI.buttons.push({ x: bx0, y, w: hw, h: 92, action: ACTIONS.createOnline });
+  drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 92, 'JOIN ONLINE', '#ff3df0', t, true, 20);
+  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 92, action: ACTIONS.joinOnline });
+  ctx.font = '14px ' + FONT;
   ctx.fillStyle = 'rgba(232,246,255,0.45)';
   ctx.textAlign = 'center';
-  ctx.fillText('LOCAL: SHARE ONE PHONE · ONLINE: TWO PHONES', W / 2, y + 92 + 38);
+  ctx.fillText('VS CLAUDE NEEDS AN ANTHROPIC API KEY', W / 2, y + 92 + 24);
 
   scanlines(ctx);
 }

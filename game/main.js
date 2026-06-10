@@ -22,13 +22,21 @@
 
   function backToTitle() {
     NET.leave();
+    AI.stop();
     g = null;
     netLost = false;
     screen = 'title';
   }
 
   window.ACTIONS = {
-    start: () => { NET.leave(); SFX.select(); startGame(); },
+    start: () => { NET.leave(); AI.stop(); SFX.select(); startGame(); },
+    startBot: () => { NET.leave(); SFX.select(); AI.start('bot'); startGame(); },
+    startClaude: () => {
+      if (!AI.ensureKey()) { SFX.deny(); return; }
+      NET.leave(); SFX.select(); AI.start('claude'); startGame();
+    },
+    cycleDiff: () => { AI.cycleDiff(); SFX.cursor(); },
+    cycleModel: () => { AI.cycleModel(); SFX.cursor(); },
     pickBoard: (i) => { boardIdx = i; localStorage.setItem('cc-board', String(i)); SFX.cursor(); },
     createOnline: () => { SFX.select(); NET.hostRoom(); screen = 'lobby'; },
     joinOnline: () => { SFX.cursor(); screen = 'join'; },
@@ -46,11 +54,13 @@
     split: (pl) => {
       if (!g || g.over || paused) return;
       if (NET.S.mode === 'guest') { NET.send({ t: 'split' }); return; }
+      if (AI.S.mode && pl === 1) return; // the AI controls player 2
       trySplit(g, pl);
     },
     rematch: () => {
       if (NET.S.mode === 'guest') { NET.send({ t: 'rematch' }); SFX.cursor(); return; }
       SFX.select();
+      if (AI.S.mode) AI.start(AI.S.mode);
       startGame();
       if (NET.S.mode === 'host') NET.sendStart(boardIdx, g);
     },
@@ -125,7 +135,7 @@
       const r = Math.floor((ly - BY) / CELL);
       if (inBounds(c, r)) {
         if (NET.S.mode === 'guest') NET.send({ t: 'tap', c, r });
-        else if (NET.S.mode === 'host') tapCell(g, c, r, 0);
+        else if (NET.S.mode === 'host' || AI.S.mode) tapCell(g, c, r, 0);
         else tapCell(g, c, r);
       }
     }
@@ -143,8 +153,10 @@
         if (!paused) NET.guestSmooth(g, dt);
       } else if (!paused) {
         updateGame(g, dt);
+        AI.tick(g, dt);
       }
       drawGame(ctx, g, paused, t);
+      AI.drawHud(ctx);
       if (NET.S.mode === 'host') NET.hostTick(g, paused, now);
       if (netLost) {
         drawOverlayMsg(ctx, 'OPPONENT LEFT', '#ff5566', 'TAP TO RETURN TO TITLE');
