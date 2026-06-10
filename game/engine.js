@@ -1,0 +1,344 @@
+// Cortex Clash — game rules + real-time simulation
+'use strict';
+const COLS = 9, ROWS = 13, MAXV = 6;
+const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+// Live-tweakable settings (the Tweaks panel writes into this)
+window.TWEAKS = Object.assign({
+  speed: 1, castleEnergy: 36, powerEvery: 9, glow: 1, scanlines: true,
+}, window.TWEAKS || {});
+
+// Starting layout, defined for the TOP player (owner 1); bottom is mirrored.
+const PIECE_LAYOUT = [[4, 2, 6], [3, 2, 5], [5, 2, 4], [2, 2, 3], [6, 2, 2], [2, 1, 1], [6, 1, 1]];
+
+function cellKey(c, r) { return c + ',' + r; }
+function inBounds(c, r) { return c >= 0 && c < COLS && r >= 0 && r < ROWS; }
+
+function makeGame(boardIdx) {
+  const board = BOARDS[boardIdx];
+  const walls = new Set();
+  board.map.forEach((rowStr, r) => {
+    for (let c = 0; c < COLS; c++) if (rowStr[c] === '#') walls.add(cellKey(c, r));
+  });
+  const maxE = Math.round(window.TWEAKS.castleEnergy);
+  const castles = [
+    { owner: 0, col: 4, row: 11, energy: maxE, max: maxE, lastDrainT: -9 },
+    { owner: 1, col: 4, row: 1, energy: maxE, max: maxE, lastDrainT: -9 },
+  ];
+  const pieces = [];
+  let pid = 1;
+  const newPiece = (owner, value, col, row) => ({
+    id: pid++, owner, value, col, row,
+    path: null, prog: 0, from: null, shield: false, charged: false, boostUntil: -99,
+  });
+  if (board.random) {
+    // CHAOS: mirrored random walls (rows 3–9 only, so castles stay reachable)
+    const nPairs = 5 + ((Math.random() * 5) | 0);
+    let guard = 0, made = 0;
+    while (made < nPairs && guard++ < 300) {
+      const c = (Math.random() * COLS) | 0;
+      const r = 3 + ((Math.random() * 4) | 0);
+      const k1 = cellKey(c, r), k2 = cellKey(c, ROWS - 1 - r);
+      if (walls.has(k1) || walls.has(k2)) continue;
+      walls.add(k1);
+      if (k2 !== k1) walls.add(k2);
+      made++;
+    }
+    // CHAOS: mirrored random armies — random size, values, and spread
+    const n = 5 + ((Math.random() * 4) | 0);
+    const used = new Set();
+    let placed = 0;
+    guard = 0;
+    while (placed < n && guard++ < 400) {
+      const c = (Math.random() * COLS) | 0;
+      const r = (Math.random() * 5) | 0;
+      if (c === 4 && r === 1) continue; // castle cell
+      const key = cellKey(c, r);
+      if (used.has(key) || walls.has(key)) continue;
+      used.add(key);
+      const v = 1 + ((Math.random() * MAXV) | 0);
+      pieces.push(newPiece(1, v, c, r));
+      pieces.push(newPiece(0, v, c, ROWS - 1 - r));
+      placed++;
+    }
+  } else {
+    for (const owner of [0, 1]) {
+      for (const [c, r, v] of PIECE_LAYOUT) {
+        pieces.push(newPiece(owner, v, c, owner === 1 ? r : ROWS - 1 - r));
+      }
+    }
+  }
+  return {
+    boardIdx, walls, castles, pieces, powerups: [],
+    sel: [null, null], time: 0, powerTimer: 6, fx: [],
+    winner: -1, over: false, overT: 0, shake: 0, nextId: pid,
+  };
+}
+
+function pieceById(g, id) { return g.pieces.find((p) => p.id === id) || null; }
+function stationaryAt(g, c, r) { return g.pieces.find((p) => !p.path && p.col === c && p.row === r) || null; }
+function castleAt(g, c, r) { return g.castles.find((k) => k.col === c && k.row === r) || null; }
+function powerupAt(g, c, r) { return g.powerups.find((u) => u.col === c && u.row === r) || null; }
+
+function reservedDests(g) {
+  const s = new Set();
+  for (const p of g.pieces) if (p.path) s.add(cellKey(p.path.dest[0], p.path.dest[1]));
+  return s;
+}
+
+function rangeOf(p) { return 7 - p.value; }       // 1 reaches 6 cells, 6 reaches 1
+function speedOf(g, p) {                          // cells per second: 1 is fast, 6 is slow
+  let s = 0.8 + (MAXV - p.value) * 0.85;
+  if (p.boostUntil > g.time) s *= 1.7;
+  return s;
+}
+
+function legalMoves(g, p) {
+  const out = [];
+  if (!p || p.path) return out;
+  const reserved = reservedDests(g);
+  for (const [dx, dy] of DIRS) {
+    for (let step = 1; step <= rangeOf(p); step++) {
+      const c = p.col + dx * step, r = p.row + dy * step;
+      if (!inBounds(c, r) || g.walls.has(cellKey(c, r))) break;
+      const k = castleAt(g, c, r);
+      if (k) {
+        // a piece standing on a castle can be attacked — even on YOUR castle,
+        // so defenders can fight off a sieging piece
+        const occ = stationaryAt(g, c, r);
+        if (occ && occ.owner !== p.owner) out.push({ c, r, kind: 'attack' });
+        else if (!occ) out.push({ c, r, kind: k.owner !== p.owner ? 'castle' : 'move' });
+        break;
+      }
+      const sp = stationaryAt(g, c, r);
+      if (sp) {
+        if (sp.owner !== p.owner) out.push({ c, r, kind: 'attack' });
+        else if (sp.value + p.value <= MAXV) out.push({ c, r, kind: 'combine' });
+        break;
+      }
+      if (reserved.has(cellKey(c, r))) continue; // can pass over, can't land on a claimed cell
+      out.push({ c, r, kind: powerupAt(g, c, r) ? 'power' : 'move' });
+    }
+  }
+  return out;
+}
+
+function commandMove(g, p, c, r) {
+  const n = Math.max(Math.abs(c - p.col), Math.abs(r - p.row));
+  p.from = [p.col, p.row];
+  p.path = { dest: [c, r], cells: n };
+  p.prog = 0;
+  SFX.launch(p.value);
+}
+
+function piecePos(p) { // board-cell coords (float) for rendering
+  if (!p.path) return [p.col, p.row];
+  const t = Math.min(1, p.prog / p.path.cells);
+  return [
+    p.from[0] + (p.path.dest[0] - p.from[0]) * t,
+    p.from[1] + (p.path.dest[1] - p.from[1]) * t,
+  ];
+}
+
+function removePiece(g, p) {
+  g.pieces = g.pieces.filter((q) => q !== p);
+  for (const pl of [0, 1]) if (g.sel[pl] === p.id) g.sel[pl] = null;
+}
+
+function addFx(g, type, c, r, owner) { g.fx.push({ type, c, r, owner, t: 0 }); }
+
+function combat(g, atk, def) {
+  g.shake = 1;
+  if (def.shield) {
+    def.shield = false;
+    addFx(g, 'shield', def.col, def.row, def.owner);
+    addFx(g, 'boom', atk.col, atk.row, atk.owner);
+    removePiece(g, atk);
+    SFX.hit();
+    return;
+  }
+  def.value -= atk.value;
+  if (def.value <= 0) {
+    addFx(g, 'boom', def.col, def.row, def.owner);
+    removePiece(g, def);
+    SFX.boom();
+  } else {
+    addFx(g, 'boom', atk.col, atk.row, atk.owner);
+    removePiece(g, atk);
+    SFX.hit();
+  }
+}
+
+function applyPower(g, p, u) {
+  g.powerups = g.powerups.filter((x) => x !== u);
+  if (u.type === 'charge') { p.value = Math.min(MAXV, p.value + 2); p.charged = true; }
+  if (u.type === 'bolt') p.boostUntil = g.time + 8;
+  if (u.type === 'shield') p.shield = true;
+  if (u.type === 'heart') {
+    const k = g.castles[p.owner];
+    k.energy = Math.min(k.max, k.energy + 12);
+  }
+  addFx(g, 'power', p.col, p.row, p.owner);
+  SFX.power();
+}
+
+function arrive(g, p) {
+  const [c, r] = p.path.dest;
+  p.path = null;
+  p.prog = 0;
+  p.col = c;
+  p.row = r;
+  const sp = g.pieces.find((q) => q !== p && !q.path && q.col === c && q.row === r);
+  if (sp && sp.owner === p.owner) {
+    sp.value = Math.min(MAXV, sp.value + p.value);
+    sp.shield = sp.shield || p.shield;
+    sp.charged = sp.charged || p.charged;
+    removePiece(g, p);
+    addFx(g, 'ring', c, r, sp.owner);
+    SFX.combine();
+    return;
+  }
+  if (sp) combat(g, p, sp);
+  if (!g.pieces.includes(p)) return;
+  const u = powerupAt(g, c, r);
+  if (u) applyPower(g, p, u);
+}
+
+const POWER_TYPES = ['charge', 'bolt', 'shield', 'heart'];
+function spawnPowerup(g) {
+  if (g.powerups.length >= 3) return;
+  const cells = [];
+  for (let r = 4; r <= 8; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (g.walls.has(cellKey(c, r)) || stationaryAt(g, c, r) || castleAt(g, c, r) || powerupAt(g, c, r)) continue;
+      cells.push([c, r]);
+    }
+  }
+  if (!cells.length) return;
+  const [c, r] = cells[(Math.random() * cells.length) | 0];
+  g.powerups.push({ type: POWER_TYPES[(Math.random() * POWER_TYPES.length) | 0], col: c, row: r, born: g.time });
+  SFX.spawn();
+}
+
+function endGame(g, winner) {
+  if (g.over) return;
+  g.over = true;
+  g.overT = 0;
+  g.winner = winner;
+  g.sel = [null, null];
+  SFX.fanfare();
+}
+
+function updateGame(g, dt) {
+  dt *= window.TWEAKS.speed;
+  for (const f of g.fx) f.t += dt;
+  g.fx = g.fx.filter((f) => f.t < 0.8);
+  g.shake = Math.max(0, g.shake - dt * 4);
+  if (g.over) { g.overT += dt; return; }
+  g.time += dt;
+
+  for (const p of [...g.pieces]) {
+    if (!p.path) continue;
+    p.prog += speedOf(g, p) * dt;
+    if (p.prog >= p.path.cells) arrive(g, p);
+  }
+
+  // castle drain — ANY parked piece drains the castle (even the owner's, so
+  // defending in person costs energy until the piece moves off), at 70% rate
+  for (const k of g.castles) {
+    let drain = 0;
+    for (const p of g.pieces) {
+      if (!p.path && p.col === k.col && p.row === k.row) drain += p.value;
+    }
+    if (drain > 0) {
+      k.energy -= drain * dt * 0.7;
+      k.lastDrainT = g.time;
+      if (g.time % 0.5 < dt) SFX.drain();
+      if (k.energy < k.max * 0.3 && g.time % 1.2 < dt) SFX.alarm();
+      if (k.energy <= 0) { k.energy = 0; endGame(g, 1 - k.owner); return; }
+    }
+  }
+
+  // elimination
+  for (const pl of [0, 1]) {
+    if (!g.pieces.some((p) => p.owner === pl)) { endGame(g, 1 - pl); return; }
+  }
+
+  // power-up spawns
+  g.powerTimer -= dt;
+  if (g.powerTimer <= 0) {
+    g.powerTimer = Math.max(4, window.TWEAKS.powerEvery);
+    spawnPowerup(g);
+  }
+
+  // drop stale selections
+  for (const pl of [0, 1]) {
+    const p = g.sel[pl] && pieceById(g, g.sel[pl]);
+    if (!p || p.path || p.owner !== pl) g.sel[pl] = null;
+  }
+}
+
+// A tap on board cell (c,r). ownerFilter limits which player's pieces/claims
+// respond (used in online play: each device controls one side only).
+function tapCell(g, c, r, ownerFilter) {
+  // Is this cell a legal destination for either player's current selection?
+  const claims = [];
+  for (const pl of [0, 1]) {
+    if (ownerFilter != null && pl !== ownerFilter) continue;
+    const p = g.sel[pl] && pieceById(g, g.sel[pl]);
+    if (!p) continue;
+    const lm = legalMoves(g, p);
+    if (lm.some((m) => m.c === c && m.r === r)) claims.push({ pl, p });
+  }
+  if (claims.length) {
+    claims.sort((a, b) => {
+      const da = Math.max(Math.abs(a.p.col - c), Math.abs(a.p.row - r));
+      const db = Math.max(Math.abs(b.p.col - c), Math.abs(b.p.row - r));
+      return da - db;
+    });
+    const { pl, p } = claims[0];
+    commandMove(g, p, c, r);
+    g.sel[pl] = null;
+    return;
+  }
+  const sp = stationaryAt(g, c, r);
+  if (sp && ownerFilter != null && sp.owner !== ownerFilter) return;
+  if (sp) {
+    if (g.sel[sp.owner] === sp.id) {
+      g.sel[sp.owner] = null;
+      SFX.cursor();
+    } else {
+      g.sel[sp.owner] = sp.id;
+      SFX.select();
+    }
+    return;
+  }
+  // empty tap: clear any selection whose legal set didn't include it? leave selections alone.
+}
+
+function trySplit(g, pl) {
+  const p = g.sel[pl] && pieceById(g, g.sel[pl]);
+  if (!p || p.path || p.value < 2) { SFX.deny(); return; }
+  const half = Math.floor(p.value / 2);
+  const reserved = reservedDests(g);
+  const dirs = [...DIRS].sort(() => Math.random() - 0.5);
+  for (const [dx, dy] of dirs) {
+    const c = p.col + dx, r = p.row + dy;
+    if (!inBounds(c, r) || g.walls.has(cellKey(c, r)) || castleAt(g, c, r)) continue;
+    if (stationaryAt(g, c, r) || powerupAt(g, c, r) || reserved.has(cellKey(c, r))) continue;
+    p.value -= half;
+    g.pieces.push({
+      id: g.nextId++, owner: pl, value: half, col: c, row: r,
+      path: null, prog: 0, from: null, shield: false, charged: false, boostUntil: -99,
+    });
+    addFx(g, 'ring', p.col, p.row, pl);
+    SFX.split();
+    return;
+  }
+  SFX.deny();
+}
+
+Object.assign(window, {
+  COLS, ROWS, MAXV, makeGame, updateGame, tapCell, trySplit, speedOf,
+  legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt,
+});
