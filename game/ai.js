@@ -3,9 +3,9 @@
 'use strict';
 window.AI = (() => {
   const DIFFS = {
-    easy: { label: 'EASY', interval: 2.4, noise: 30, splitChance: 0.0 },
-    normal: { label: 'NORMAL', interval: 1.4, noise: 12, splitChance: 0.15 },
-    hard: { label: 'HARD', interval: 0.8, noise: 4, splitChance: 0.3 },
+    easy: { label: 'EASY', interval: 3.2, noise: 40, splitChance: 0.0, skip: 0.3 },
+    normal: { label: 'NORMAL', interval: 2.1, noise: 16, splitChance: 0.12, skip: 0.1 },
+    hard: { label: 'HARD', interval: 1.3, noise: 5, splitChance: 0.3, skip: 0 },
   };
   const DIFF_ORDER = ['easy', 'normal', 'hard'];
   const MODELS = [
@@ -69,8 +69,24 @@ window.AI = (() => {
   // ---------- heuristic bot ----------
   const dist = (c1, r1, c2, r2) => Math.max(Math.abs(c1 - c2), Math.abs(r1 - r2));
 
-  function scoreMove(g, p, m) {
+  // enemy pieces heading for (or sitting near) my castle; uses a mover's
+  // destination, not its current cell, so incoming attacks are seen early
+  function findThreats(g) {
+    const mk = g.castles[1];
+    const out = [];
+    for (const q of g.pieces) {
+      if (q.owner !== 0) continue;
+      const c = q.path ? q.path.dest[0] : q.col;
+      const r = q.path ? q.path.dest[1] : q.row;
+      const d = dist(c, r, mk.col, mk.row);
+      if (d <= 3) out.push({ q, c, r, d });
+    }
+    return out;
+  }
+
+  function scoreMove(g, p, m, threats) {
     const ek = g.castles[0], mk = g.castles[1]; // enemy / mine (AI is owner 1)
+    const lowEnergy = mk.energy < mk.max * 0.55;
     if (m.kind === 'castle') return 200 + p.value * 10;
     if (m.kind === 'attack') {
       const t = stationaryAt(g, m.c, m.r);
@@ -79,8 +95,13 @@ window.AI = (() => {
       if (t.shield) s = p.value === 1 ? 25 : 8 - p.value * 4;
       else if (p.value >= t.value) s = 55 + t.value * 6;   // clean kill
       else s = p.value * 5 - 14;                           // chip damage, lose piece
-      if (dist(t.col, t.row, mk.col, mk.row) <= 2) s += 70; // defend home turf
-      if (t.col === mk.col && t.row === mk.row) s += 80;    // sieging my castle!
+      const dHome = dist(t.col, t.row, mk.col, mk.row);
+      if (dHome <= 3) {
+        s += (4 - dHome) * 30;                  // intercept urgency, closer = hotter
+        if (!t.shield && t.value > p.value) s += 25; // chipping a big intruder is worth it
+        if (lowEnergy) s += 35;
+      }
+      if (t.col === mk.col && t.row === mk.row) s += 120; // sieging my castle: kill it NOW
       return s;
     }
     if (m.kind === 'power') {
@@ -94,17 +115,20 @@ window.AI = (() => {
     // plain move: advance toward the enemy castle, fast pieces lead the push
     let s = (dist(p.col, p.row, ek.col, ek.row) - dist(m.c, m.r, ek.col, ek.row)) * (7 - p.value) * 2.2;
     if (m.c === mk.col && m.r === mk.row) s -= 60; // never park on own castle
-    // pull toward intruders near my castle
-    for (const q of g.pieces) {
-      if (q.owner !== 1 && dist(q.col, q.row, mk.col, mk.row) <= 3) {
-        s += (dist(p.col, p.row, q.col, q.row) - dist(m.c, m.r, q.col, q.row)) * 6;
-      }
+    // fall back toward incoming attackers; the hotter the threat, the harder the pull
+    for (const t of threats) {
+      const gain = dist(p.col, p.row, t.c, t.r) - dist(m.c, m.r, t.c, t.r);
+      s += gain * (10 + (3 - t.d) * 4 + (lowEnergy ? 6 : 0));
+      // garrison: stand next to the castle so the intruder can be hit on arrival
+      if (gain > 0 && dist(m.c, m.r, mk.col, mk.row) === 1) s += 18;
     }
     return s;
   }
 
   function botAct(g) {
     const d = DIFFS[S.diff];
+    if (Math.random() < d.skip) return; // hesitation, keeps lower levels human
+    const threats = findThreats(g);
     const mine = g.pieces.filter((p) => p.owner === 1 && !p.path);
     if (!mine.length) return;
     // occasional split to swarm when low on pieces
@@ -121,7 +145,7 @@ window.AI = (() => {
     let best = null, bestScore = -Infinity;
     for (const p of mine) {
       for (const m of legalMoves(g, p)) {
-        const s = scoreMove(g, p, m) + Math.random() * d.noise;
+        const s = scoreMove(g, p, m, threats) + Math.random() * d.noise;
         if (s > bestScore) { bestScore = s; best = { p, m }; }
       }
     }
