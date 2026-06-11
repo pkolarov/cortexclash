@@ -3,7 +3,9 @@
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
-  let screen = 'title'; // title | lobby | join | game
+  let screen = 'title'; // title | lobby | join | game | picker
+  let picker = null;    // { title, options: [rosterIds], onPick }
+  let watchBottom = null;
   let boardIdx = Math.min(BOARDS.length - 1, Math.max(0, parseInt(localStorage.getItem('cc-board') || '0', 10) || 0));
   let g = null;
   let paused = false;
@@ -23,20 +25,60 @@
   function backToTitle() {
     NET.leave();
     AI.stop();
+    picker = null;
     g = null;
     netLost = false;
     screen = 'title';
   }
 
+  function startSinglePlayer(id) {
+    if (!AI.ensureKeys([id])) { SFX.deny(); return; }
+    NET.leave();
+    SFX.select();
+    AI.startSingle(id);
+    startGame();
+  }
+
+  function startWatch(bottomId, topId) {
+    if (!AI.ensureKeys([bottomId, topId])) { SFX.deny(); return; }
+    NET.leave();
+    SFX.select();
+    AI.startWatch(bottomId, topId);
+    startGame();
+  }
+
   window.ACTIONS = {
     start: () => { NET.leave(); AI.stop(); SFX.select(); startGame(); },
-    startBot: () => { NET.leave(); SFX.select(); AI.start('bot'); startGame(); },
-    startClaude: () => {
-      if (!AI.ensureKey()) { SFX.deny(); return; }
-      NET.leave(); SFX.select(); AI.start('claude'); startGame();
+    vsComputer: () => {
+      SFX.cursor();
+      picker = { title: 'SELECT DIFFICULTY', options: AI.DIFF_IDS, onPick: startSinglePlayer };
+      screen = 'picker';
     },
-    cycleDiff: () => { AI.cycleDiff(); SFX.cursor(); },
-    cycleModel: () => { AI.cycleModel(); SFX.cursor(); },
+    vsClaude: () => {
+      SFX.cursor();
+      picker = { title: 'SELECT CLAUDE MODEL', options: AI.CLAUDE_IDS, onPick: startSinglePlayer };
+      screen = 'picker';
+    },
+    aiVsAi: () => {
+      SFX.cursor();
+      watchBottom = null;
+      picker = {
+        title: 'PLAYER 1 · BOTTOM',
+        options: AI.ROSTER.map((r) => r.id),
+        onPick: (id) => {
+          watchBottom = id;
+          SFX.cursor();
+          picker = {
+            title: 'PLAYER 2 · TOP',
+            options: AI.ROSTER.map((r) => r.id),
+            onPick: (topId) => startWatch(watchBottom, topId),
+          };
+        },
+      };
+      screen = 'picker';
+    },
+    pickerChoose: (i) => { if (picker) picker.onPick(picker.options[i]); },
+    pickerBack: () => { SFX.cursor(); picker = null; screen = 'title'; },
     pickBoard: (i) => { boardIdx = i; localStorage.setItem('cc-board', String(i)); SFX.cursor(); },
     createOnline: () => { SFX.select(); NET.hostRoom(); screen = 'lobby'; },
     joinOnline: () => { SFX.cursor(); screen = 'join'; },
@@ -54,13 +96,13 @@
     split: (pl) => {
       if (!g || g.over || paused) return;
       if (NET.S.mode === 'guest') { NET.send({ t: 'split' }); return; }
-      if (AI.S.mode && pl === 1) return; // the AI controls player 2
+      if (AI.S.ctls[pl]) return; // an AI controls this side
       trySplit(g, pl);
     },
     rematch: () => {
       if (NET.S.mode === 'guest') { NET.send({ t: 'rematch' }); SFX.cursor(); return; }
       SFX.select();
-      if (AI.S.mode) AI.start(AI.S.mode);
+      if (AI.active()) AI.restart();
       startGame();
       if (NET.S.mode === 'host') NET.sendStart(boardIdx, g);
     },
@@ -135,7 +177,9 @@
       const r = Math.floor((ly - BY) / CELL);
       if (inBounds(c, r)) {
         if (NET.S.mode === 'guest') NET.send({ t: 'tap', c, r });
-        else if (NET.S.mode === 'host' || AI.S.mode) tapCell(g, c, r, 0);
+        else if (NET.S.mode === 'host') tapCell(g, c, r, 0);
+        else if (AI.S.watch) { /* spectator: board taps do nothing */ }
+        else if (AI.active()) tapCell(g, c, r, 0);
         else tapCell(g, c, r);
       }
     }
@@ -162,6 +206,8 @@
         drawOverlayMsg(ctx, 'OPPONENT LEFT', '#ff5566', 'TAP TO RETURN TO TITLE');
         UI.buttons.push({ x: 0, y: 0, w: W, h: H, abs: true, action: ACTIONS.netBack });
       }
+    } else if (screen === 'picker' && picker) {
+      drawPicker(ctx, picker, t);
     } else if (screen === 'lobby') {
       drawLobby(ctx, boardIdx, t);
     } else if (screen === 'join') {

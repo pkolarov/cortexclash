@@ -669,13 +669,96 @@ function drawStars(ctx, t) {
   }
 }
 
+// ---------- ambient battle behind the title logo ----------
+const TFX = { tokens: [], booms: [], spawnT: 0, lastT: 0 };
+const TFX_LANES = [115, 205, 295, 385, 470];
+
+function titleBattle(ctx, t) {
+  const dt = Math.min(0.05, Math.max(0, t - TFX.lastT));
+  TFX.lastT = t;
+
+  TFX.spawnT -= dt;
+  if (TFX.spawnT <= 0 && TFX.tokens.length < 7) {
+    TFX.spawnT = 0.9 + Math.random() * 1.4;
+    const owner = Math.random() < 0.5 ? 0 : 1;       // 0 cyan from left, 1 magenta from right
+    const v = 1 + ((Math.random() * 6) | 0);
+    TFX.tokens.push({
+      owner, v,
+      x: owner === 0 ? -50 : W + 50,
+      y: TFX_LANES[(Math.random() * TFX_LANES.length) | 0] + (Math.random() * 24 - 12),
+      vx: (owner === 0 ? 1 : -1) * (60 + (7 - v) * 38),
+    });
+  }
+
+  for (const k of TFX.tokens) k.x += k.vx * dt;
+
+  // clashes: opposing tokens in the same lane collide; bigger one survives
+  for (const a of TFX.tokens) {
+    for (const b of TFX.tokens) {
+      if (a === b || a.owner === b.owner || a.dead || b.dead) continue;
+      if (Math.abs(a.y - b.y) < 40 && Math.abs(a.x - b.x) < 44) {
+        const [w, l] = a.v >= b.v ? [a, b] : [b, a];
+        l.dead = true;
+        w.v -= l.v;
+        if (w.v <= 0) w.dead = true;
+        TFX.booms.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, t: 0, owner: l.owner });
+      }
+    }
+  }
+  TFX.tokens = TFX.tokens.filter((k) => !k.dead && k.x > -80 && k.x < W + 80);
+  for (const bm of TFX.booms) bm.t += dt;
+  TFX.booms = TFX.booms.filter((bm) => bm.t < 0.6);
+
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  for (const k of TFX.tokens) {
+    const s = 36 + k.v * 5;
+    const col = PLAYER_COLORS[k.owner];
+    ctx.save();
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 10 * window.TWEAKS.glow;
+    ctx.fillStyle = PLAYER_DARK[k.owner];
+    rr(ctx, k.x - s / 2, k.y - s / 2, s, s, 10);
+    ctx.fill();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 3;
+    rr(ctx, k.x - s / 2, k.y - s / 2, s, s, 10);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = col;
+    ctx.font = (14 + k.v * 2) + 'px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(k.v), k.x, k.y + 2);
+    ctx.restore();
+  }
+  for (const bm of TFX.booms) {
+    const p = bm.t / 0.6;
+    ctx.save();
+    ctx.globalAlpha = 0.8 * (1 - p);
+    ctx.strokeStyle = PLAYER_COLORS[bm.owner];
+    ctx.lineWidth = 4 * (1 - p) + 1;
+    ctx.beginPath();
+    ctx.arc(bm.x, bm.y, 8 + p * 52, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + bm.t * 3;
+      ctx.fillRect(bm.x + Math.cos(a) * p * 44 - 2, bm.y + Math.sin(a) * p * 44 - 2, 4, 4);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
 function drawTitle(ctx, boardIdx, t) {
   ctx.fillStyle = '#06060f';
   ctx.fillRect(0, 0, W, H);
 
   drawStars(ctx, t);
+  titleBattle(ctx, t);
 
-  glowText(ctx, '2 PLAYERS · 1 SCREEN', W / 2, 130, 20, '#aebcff', 8);
+  glowText(ctx, 'HUMANS · CPUS · LLMS', W / 2, 130, 20, '#aebcff', 8);
   // logo with chromatic offsets
   ctx.save();
   ctx.globalAlpha = 0.6;
@@ -775,37 +858,65 @@ function drawTitle(ctx, boardIdx, t) {
   });
   y += 2 * ch + lgy + 16;
 
-  const sw2 = 640, sh2 = 96;
+  const sw2 = 760;
   const bx0 = W / 2 - sw2 / 2;
   const hw = (sw2 - 18) / 2;
-  drawBigBtn(ctx, bx0, y, sw2, sh2, '▶ LOCAL BATTLE', '#52ff9d', t);
-  UI.buttons.push({ x: bx0, y, w: sw2, h: sh2, action: ACTIONS.start });
-  y += sh2 + 12;
-  // single player vs AI
-  drawBigBtn(ctx, bx0, y, hw, 92, 'VS COMPUTER', '#ffd23f', t, true, 20);
-  UI.buttons.push({ x: bx0, y, w: hw, h: 92, action: ACTIONS.startBot });
-  drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 92, 'VS CLAUDE', '#b18cff', t, true, 20);
-  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 92, action: ACTIONS.startClaude });
-  y += 92 + 6;
-  // difficulty + model chips
-  ctx.font = '14px ' + FONT;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(255,210,63,0.8)';
-  ctx.fillText('LEVEL: ' + AI.diffLabel() + ' ▸', bx0 + hw / 2, y + 16);
-  UI.buttons.push({ x: bx0, y, w: hw, h: 32, action: ACTIONS.cycleDiff });
-  ctx.fillStyle = 'rgba(177,140,255,0.8)';
-  ctx.fillText('MODEL: ' + AI.modelLabel() + ' ▸', bx0 + sw2 - hw / 2, y + 16);
-  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 32, action: ACTIONS.cycleModel });
-  y += 32 + 12;
-  drawBigBtn(ctx, bx0, y, hw, 92, 'HOST ONLINE', '#19e6ff', t, true, 20);
-  UI.buttons.push({ x: bx0, y, w: hw, h: 92, action: ACTIONS.createOnline });
-  drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 92, 'JOIN ONLINE', '#ff3df0', t, true, 20);
-  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 92, action: ACTIONS.joinOnline });
+  drawBigBtn(ctx, bx0, y, hw, 96, 'VS COMPUTER', '#ffd23f', t, false, 22);
+  UI.buttons.push({ x: bx0, y, w: hw, h: 96, action: ACTIONS.vsComputer });
+  drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 96, 'VS CLAUDE', '#b18cff', t, false, 22);
+  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 96, action: ACTIONS.vsClaude });
+  y += 96 + 12;
+  drawBigBtn(ctx, bx0, y, hw, 96, '2P LOCAL', '#52ff9d', t, true, 22);
+  UI.buttons.push({ x: bx0, y, w: hw, h: 96, action: ACTIONS.start });
+  drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 96, 'AI VS AI', '#ff8c3d', t, true, 22);
+  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 96, action: ACTIONS.aiVsAi });
+  y += 96 + 12;
+  drawBigBtn(ctx, bx0, y, hw, 96, 'HOST ONLINE', '#19e6ff', t, true, 22);
+  UI.buttons.push({ x: bx0, y, w: hw, h: 96, action: ACTIONS.createOnline });
+  drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 96, 'JOIN ONLINE', '#ff3df0', t, true, 22);
+  UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 96, action: ACTIONS.joinOnline });
   ctx.font = '14px ' + FONT;
   ctx.fillStyle = 'rgba(232,246,255,0.45)';
   ctx.textAlign = 'center';
-  ctx.fillText('VS CLAUDE NEEDS AN ANTHROPIC API KEY', W / 2, y + 92 + 24);
+  ctx.fillText('LLM MODES NEED YOUR OWN API KEY', W / 2, y + 96 + 24);
+
+  scanlines(ctx);
+}
+
+// ---------- opponent picker ----------
+function drawPicker(ctx, picker, t) {
+  ctx.fillStyle = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+  drawStars(ctx, t);
+  titleBattle(ctx, t);
+
+  glowText(ctx, picker.title, W / 2, 360, 30, '#ffd23f', 12);
+
+  const bw = 880, bh = 108, gap = 16;
+  const total = picker.options.length * (bh + gap) - gap;
+  let y = Math.max(440, (H - total) / 2 - 60);
+  picker.options.forEach((id, i) => {
+    const spec = AI.byId(id);
+    const x = (W - bw) / 2;
+    const col = spec.kind === 'bot' ? '#ffd23f'
+      : spec.provider === 'anthropic' ? '#b18cff'
+      : spec.provider === 'openai' ? '#52ff9d'
+      : '#19e6ff';
+    drawBigBtn(ctx, x, y, bw, bh, spec.label, col, t, true, 24);
+    if (spec.kind === 'llm') {
+      ctx.font = '13px ' + FONT;
+      ctx.fillStyle = 'rgba(232,246,255,0.4)';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('API KEY', x + bw - 26, y + bh / 2);
+    }
+    UI.buttons.push({ x, y, w: bw, h: bh, action: () => ACTIONS.pickerChoose(i) });
+    y += bh + gap;
+  });
+
+  y += 18;
+  drawBigBtn(ctx, W / 2 - 220, y, 440, 90, '◀ BACK', '#aebcff', t, true, 20);
+  UI.buttons.push({ x: W / 2 - 220, y, w: 440, h: 90, action: ACTIONS.pickerBack });
 
   scanlines(ctx);
 }
@@ -915,4 +1026,4 @@ function drawJoin(ctx, code, t) {
   scanlines(ctx);
 }
 
-Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawTitle, drawLobby, drawJoin, drawOverlayMsg });
+Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawTitle, drawPicker, drawLobby, drawJoin, drawOverlayMsg });
