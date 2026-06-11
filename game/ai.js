@@ -143,9 +143,12 @@ window.AI = (() => {
       }
     }
     let best = null, bestScore = -Infinity;
+    const mk = g.castles[1];
     for (const p of mine) {
+      // standing on my own castle drains it — leaving is always urgent
+      const leaveBonus = (p.col === mk.col && p.row === mk.row) ? 130 : 0;
       for (const m of legalMoves(g, p)) {
-        const s = scoreMove(g, p, m, threats) + Math.random() * d.noise;
+        const s = scoreMove(g, p, m, threats) + leaveBonus + Math.random() * d.noise;
         if (s > bestScore) { bestScore = s; best = { p, m }; }
       }
     }
@@ -160,6 +163,7 @@ window.AI = (() => {
     'Win by draining the enemy castle to 0 energy: park pieces ON the enemy castle cell. Each parked piece drains energy equal to its value per second. Parking drains YOUR castle too, so never park on your own castle. You lose if your castle is drained or you run out of pieces.',
     'Pieces have a value 1-6. Value = attack damage and merge weight. Move range = 7 - value cells in a straight or diagonal line (blocked by walls and pieces). Low values are fast and long-ranged; high values are slow but hit hard.',
     'Landing on an enemy deals your value as damage; if the defender survives, your piece dies. Landing on your own piece merges values (max 6). Powerups: charge (+2 value), bolt (speed boost 8s), shield (blocks one hit), heart (+12 castle energy).',
+    'Leaving an enemy castle cell costs 1 value (a piece at value 1 dies instead of leaving) - camping the enemy castle is a commitment. If one of your pieces ends up standing on YOUR OWN castle, move it off immediately; it has no exit penalty but it drains your castle every second it stays.',
     'Each turn you get the board state plus the exact legal destinations for each of your idle pieces. Choose up to 3 moves, strictly from the listed legal destinations. Optionally split one piece (value >= 2 splits half into an adjacent cell; use 0 for no split). Include a short retro-arcade taunt (max 40 chars).',
     'Strategy: rush and camp the enemy castle, intercept attackers near your castle, grab powerups, take favorable trades. Be aggressive - passivity loses. The game keeps running while you think, so commit to strong moves.',
   ].join('\n');

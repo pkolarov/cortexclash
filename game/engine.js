@@ -124,6 +124,19 @@ function legalMoves(g, p) {
 }
 
 function commandMove(g, p, c, r) {
+  // leaving an enemy castle costs 1 strength — camping is a commitment, not
+  // a free in-and-out dance. At 0 the piece burns out entirely.
+  const k = castleAt(g, p.col, p.row);
+  if (k && k.owner !== p.owner) {
+    p.value -= 1;
+    addFx(g, 'ring', p.col, p.row, p.owner);
+    if (p.value <= 0) {
+      addFx(g, 'boom', p.col, p.row, p.owner);
+      removePiece(g, p);
+      SFX.boom();
+      return;
+    }
+  }
   const n = Math.max(Math.abs(c - p.col), Math.abs(r - p.row));
   p.from = [p.col, p.row];
   p.path = { dest: [c, r], cells: n };
