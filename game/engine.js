@@ -333,6 +333,12 @@ function trySplit(g, pl) {
   const p = g.sel[pl] && pieceById(g, g.sel[pl]);
   if (!p || p.path || p.value < 2) { SFX.deny(); return; }
   const half = Math.floor(p.value / 2);
+  // splitting a fragment off a piece camped on an enemy castle still pays the
+  // exit penalty — the fragment is what leaves, so it loses 1 (matches the
+  // splitMove picker and a plain move off the castle; no free value ferrying).
+  const onEnemyCastle = (() => { const k = castleAt(g, p.col, p.row); return k && k.owner !== pl; })();
+  const fragVal = onEnemyCastle ? half - 1 : half;
+  if (fragVal < 1) { SFX.deny(); return; }
   const reserved = reservedDests(g);
   const dirs = [...DIRS].sort(() => Math.random() - 0.5);
   for (const [dx, dy] of dirs) {
@@ -341,7 +347,7 @@ function trySplit(g, pl) {
     if (stationaryAt(g, c, r) || powerupAt(g, c, r) || reserved.has(cellKey(c, r))) continue;
     p.value -= half;
     g.pieces.push({
-      id: g.nextId++, owner: pl, value: half, col: c, row: r,
+      id: g.nextId++, owner: pl, value: fragVal, col: c, row: r,
       path: null, prog: 0, from: null, shield: false, charged: false, boostUntil: -99,
     });
     addFx(g, 'ring', p.col, p.row, pl);
@@ -351,7 +357,56 @@ function trySplit(g, pl) {
   SFX.deny();
 }
 
+// Non-toggling select of an own stationary piece (the drag/tap-down handler
+// wants "press always selects", not tapCell's toggle). Returns the owner or null.
+function selectAt(g, c, r, ownerFilter) {
+  const sp = stationaryAt(g, c, r);
+  if (!sp || (ownerFilter != null && sp.owner !== ownerFilter)) return null;
+  if (g.sel[sp.owner] !== sp.id) SFX.select();
+  g.sel[sp.owner] = sp.id;
+  return sp.owner;
+}
+
+// Drag-place: command one specific piece (by id) to (c,r). Uses the dragged
+// piece directly instead of tapCell's closest-claim, so a drag never moves the
+// wrong side's piece. Returns true if the move was legal and issued.
+function commandPieceTo(g, pl, pieceId, c, r) {
+  const p = pieceById(g, pieceId);
+  if (!p || p.owner !== pl || p.path || g.over) return false;
+  if (!legalMoves(g, p).some((m) => m.c === c && m.r === r)) return false;
+  commandMove(g, p, c, r);
+  if (g.sel[pl] === pieceId) g.sel[pl] = null;
+  return true;
+}
+
+// Split a fragment of size k off piece `pieceId` and send it straight to
+// (c,r). k === value moves the whole piece. Legality is judged for a value-k
+// piece standing on the parent's cell (smaller fragments reach farther).
+function splitMove(g, pl, pieceId, k, c, r) {
+  const p = pieceById(g, pieceId);
+  if (!p || p.owner !== pl || p.path || g.over) return false;
+  k = k | 0;
+  if (k < 1 || k > p.value) return false;
+  if (k === p.value) {
+    if (!legalMoves(g, p).some((m) => m.c === c && m.r === r)) return false;
+    commandMove(g, p, c, r);
+    return true;
+  }
+  const ghost = Object.assign({}, p, { value: k });
+  if (!legalMoves(g, ghost).some((m) => m.c === c && m.r === r)) return false;
+  p.value -= k;
+  const frag = {
+    id: g.nextId++, owner: p.owner, value: k, col: p.col, row: p.row,
+    path: null, prog: 0, from: null, shield: false, charged: false, boostUntil: -99,
+  };
+  g.pieces.push(frag);
+  addFx(g, 'ring', p.col, p.row, p.owner);
+  SFX.split();
+  commandMove(g, frag, c, r); // castle exit penalty applies to the fragment
+  return true;
+}
+
 Object.assign(window, {
-  COLS, ROWS, MAXV, makeGame, updateGame, tapCell, trySplit, speedOf,
+  COLS, ROWS, MAXV, makeGame, updateGame, tapCell, trySplit, splitMove, selectAt, commandPieceTo, speedOf,
   legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt,
 });

@@ -238,6 +238,10 @@ function drawPowerup(ctx, u, t) {
   ctx.stroke();
   ctx.restore();
   ctx.save();
+  // glyphs ('+2', heart, etc.) have a reading orientation — flip them on the
+  // guest's 180°-rotated board so they aren't upside down
+  const flipGlyph = (window.NET && NET.active()) && NET.S.view === 1;
+  if (flipGlyph) { ctx.translate(cx, cy); ctx.rotate(Math.PI); ctx.translate(-cx, -cy); }
   ctx.fillStyle = col;
   ctx.shadowColor = col;
   ctx.shadowBlur = 8 * window.TWEAKS.glow;
@@ -577,6 +581,97 @@ function drawGame(ctx, g, paused, t) {
 
   if (g.over) drawGameOver(ctx, g, t);
   scanlines(ctx);
+}
+
+// ---------- double-tap split picker ----------
+// Reads window.SPLITUI ({pl, pieceId, k, t0}) set by main.js each frame.
+// Drawn after drawGame, so the guest's 180° view flip is reapplied here.
+function drawSplitUI(ctx, g, t) {
+  const su = window.SPLITUI;
+  if (!su || !g) return;
+  const p = pieceById(g, su.pieceId);
+  if (!p || p.path) return;
+
+  ctx.save();
+  if (window.NET && NET.S.view === 1) { ctx.translate(W, H); ctx.rotate(Math.PI); }
+
+  // gold preview of where the chosen fragment can go
+  if (su.k) {
+    const ghost = Object.assign({}, p, { value: su.k });
+    const pulse = 0.2 + 0.1 * Math.sin(t * 6);
+    for (const m of legalMoves(g, ghost)) {
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = '#ffd23f';
+      rr(ctx, px(m.c) + 6, py(m.r) + 6, CELL - 12, CELL - 12, 12);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  const cx = px(p.col) + CELL / 2, cy = py(p.row) + CELL / 2;
+  const pop = Math.min(1, (t - su.t0) * 6);
+  const flipTok = (window.NET && NET.active()) ? NET.S.view === 1 : su.pl === 1;
+
+  // burst ring around the exploding piece
+  ctx.save();
+  ctx.strokeStyle = '#ffd23f';
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = 4;
+  ctx.setLineDash([12, 10]);
+  ctx.lineDashOffset = -t * 80;
+  ctx.beginPath();
+  ctx.arc(cx, cy, (CELL * 0.62) * pop, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // fragment chips 1..value-1 laid out as a clamped horizontal row near the
+  // piece — never overlaps and always on-screen, even in a board corner
+  const n = p.value - 1;
+  const R = 42, gap = 16;
+  const rowW = n * (2 * R) + (n - 1) * gap;
+  const rowX0 = Math.max(20 + R, Math.min(W - 20 - rowW + R, cx - rowW / 2 + R));
+  // place the row between the piece and the board centre, toward the owner's seat
+  let rowY = su.pl === 1 ? cy + CELL * 1.15 : cy - CELL * 1.15;
+  rowY = Math.max(HUD_H + R + 30, Math.min(H - HUD_H - R - 30, rowY));
+  const col = PLAYER_COLORS[su.pl];
+  for (let i = 0; i < n; i++) {
+    const k = i + 1;
+    const chx = rowX0 + i * (2 * R + gap);
+    const chy = rowY;
+    const on = su.k === k;
+    ctx.save();
+    ctx.globalAlpha = pop;
+    ctx.shadowColor = on ? '#ffd23f' : col;
+    ctx.shadowBlur = (on ? 24 : 12) * window.TWEAKS.glow;
+    ctx.fillStyle = PLAYER_DARK[su.pl];
+    ctx.beginPath();
+    ctx.arc(chx, chy, R * (0.6 + 0.4 * pop), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = on ? '#ffd23f' : col;
+    ctx.lineWidth = on ? 6 : 4;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.translate(chx, chy);
+    if (flipTok) ctx.rotate(Math.PI);
+    ctx.fillStyle = on ? '#ffd23f' : '#e8f6ff';
+    ctx.font = '30px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(k), 0, 3);
+    ctx.restore();
+    UI.buttons.push({ x: chx - R, y: chy - R, w: R * 2, h: R * 2, action: () => ACTIONS.chipPick(k) });
+  }
+
+  // one-line hint, readable from the owner's seat, x-clamped so it never clips
+  ctx.save();
+  const hy = su.pl === 1 ? rowY + R + 28 : rowY - R - 28;
+  ctx.translate(Math.max(260, Math.min(W - 260, cx)), Math.max(HUD_H + 20, Math.min(H - HUD_H - 20, hy)));
+  if (flipTok) ctx.rotate(Math.PI);
+  glowText(ctx, su.k ? 'TAP A GOLD CELL TO LAUNCH ' + su.k : 'PICK A FRAGMENT SIZE', 0, 0, 15, '#ffd23f', 6);
+  ctx.restore();
+
+  ctx.restore();
 }
 
 function drawOverlayMsg(ctx, big, color, small) {
@@ -1026,4 +1121,4 @@ function drawJoin(ctx, code, t) {
   scanlines(ctx);
 }
 
-Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawTitle, drawPicker, drawLobby, drawJoin, drawOverlayMsg });
+Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawSplitUI, drawTitle, drawPicker, drawLobby, drawJoin, drawOverlayMsg });

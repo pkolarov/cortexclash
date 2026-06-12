@@ -37,7 +37,7 @@ window.AI = (() => {
 
   function makeCtl(spec, own) {
     return {
-      spec, own,
+      spec, origSpec: spec, own,
       timer: spec.kind === 'llm' ? 0.8 : 1.2,
       busy: false, pending: null, errs: 0,
       status: '', taunt: '', tauntT: 0,
@@ -66,7 +66,10 @@ window.AI = (() => {
 
   function restart() {
     S.gen++;
-    S.ctls = S.ctls.map((c) => c && makeCtl(c.spec, c.own));
+    // restore the originally chosen opponent — if an LLM fell back to the CPU
+    // mid-match, a rematch should give it another shot
+    S.ctls = S.ctls.map((c) => c && makeCtl(c.origSpec, c.own));
+    for (const c of S.ctls) if (c) PLAYER_NAMES[c.own] = c.spec.name;
   }
 
   function stop() {
@@ -112,6 +115,13 @@ window.AI = (() => {
   function scoreMove(g, own, p, m, threats) {
     const ek = g.castles[1 - own], mk = g.castles[own];
     const lowEnergy = mk.energy < mk.max * 0.55;
+    // a piece sitting on the enemy castle pays 1 value to leave; a value-1
+    // camper would die, so never order it off — let it keep draining
+    if (ek.col === p.col && ek.row === p.row) {
+      if (p.value <= 1) return -999;
+      // mildly discourage abandoning a live siege when the castle isn't dead yet
+      if (ek.energy > 0) return -40 + p.value;
+    }
     if (m.kind === 'castle') return 200 + p.value * 10;
     if (m.kind === 'attack') {
       const t = stationaryAt(g, m.c, m.r);
@@ -260,15 +270,36 @@ window.AI = (() => {
     required: ['moves', 'split', 'taunt'],
   };
 
+  function authErr(msg) { const e = new Error(msg); e.auth = true; return e; }
+
+  // a 12s abort guard so a hung fetch can't leave the AI side inert forever
+  async function postJSON(url, opts) {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 12000);
+    try { return await fetch(url, Object.assign({ signal: ctrl.signal }, opts)); }
+    finally { clearTimeout(to); }
+  }
+
+  // classify a non-ok response: bad key (auth, permanent) vs transient. Gemini
+  // returns 400 (not 401) for an invalid key, so we sniff the body text too.
+  async function classifyError(res) {
+    let body = '';
+    try { body = await res.text(); } catch (e) {}
+    if (res.status === 401 || res.status === 403) return authErr('' + res.status);
+    if (/api[\s_-]?key|invalid.?key|API_KEY_INVALID|unauthor|permission.?denied/i.test(body)) {
+      return authErr('bad key (' + res.status + ')');
+    }
+    return new Error('HTTP ' + res.status);
+  }
+
   // returns the parsed {moves, split, taunt} object, or throws.
   // a thrown error with .auth = true means a bad/expired key.
   async function llmRequest(spec, sys, user) {
     const key = localStorage.getItem(PROVIDERS[spec.provider].keyName);
-    const authErr = (msg) => { const e = new Error(msg); e.auth = true; return e; };
     if (!key) throw authErr('no key');
 
     if (spec.provider === 'anthropic') {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await postJSON('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -284,15 +315,14 @@ window.AI = (() => {
           messages: [{ role: 'user', content: user }],
         }),
       });
-      if (res.status === 401) throw authErr('401');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (!res.ok) throw await classifyError(res);
       const msg = await res.json();
       const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
       return JSON.parse(text);
     }
 
     if (spec.provider === 'openai') {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await postJSON('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
         body: JSON.stringify({
@@ -309,14 +339,13 @@ window.AI = (() => {
           },
         }),
       });
-      if (res.status === 401) throw authErr('401');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (!res.ok) throw await classifyError(res);
       const msg = await res.json();
       return JSON.parse(msg.choices[0].message.content);
     }
 
     if (spec.provider === 'gemini') {
-      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' +
+      const res = await postJSON('https://generativelanguage.googleapis.com/v1beta/models/' +
         spec.model + ':generateContent?key=' + encodeURIComponent(key), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -330,8 +359,7 @@ window.AI = (() => {
           },
         }),
       });
-      if (res.status === 401 || res.status === 403) throw authErr('' + res.status);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (!res.ok) throw await classifyError(res);
       const msg = await res.json();
       return JSON.parse(msg.candidates[0].content.parts[0].text);
     }

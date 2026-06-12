@@ -80,7 +80,9 @@ const NET = (() => {
     S.connected = false;
     soundQ = [];
     if (S.mode === 'host') S.status = 'WAITING FOR PLAYER 2'; // lobby can re-arm
-    else if (S.mode === 'guest') S.status = 'CONNECTION LOST';
+    // NOTE: must NOT start with 'CONNECT' — the join screen colors any
+    // 'CONNECT…' status as an in-progress (green) state
+    else if (S.mode === 'guest') S.status = 'LINK LOST — TAP BACK';
     if (H.onRemoteGone) H.onRemoteGone();
   }
 
@@ -139,7 +141,7 @@ const NET = (() => {
     if (m.t === 'bye') { onRemoteClosed(); return; }
     if (m.t === 'start' && H.onGuestStart) {
       S.hostSpeed = m.spd || 1;
-      H.onGuestStart(m.b, m.m, m.walls);
+      H.onGuestStart(m.b, m.m, m.walls, m.pcs);
     }
     if (m.t === 'state' && H.onState) {
       S.hostSpeed = m.v || S.hostSpeed;
@@ -175,7 +177,11 @@ const NET = (() => {
   }
 
   function sendStart(boardIdx, g) {
-    send({ t: 'start', b: boardIdx, m: Math.round(window.TWEAKS.castleEnergy), spd: window.TWEAKS.speed, walls: g ? Array.from(g.walls) : null });
+    // ship the host's actual starting army too — CHAOS randomizes it per game,
+    // so without this the guest would render its own locally-rolled pieces until
+    // the first state packet (a visible wrong-army flash)
+    const pcs = g ? g.pieces.map((p) => [p.id, p.owner, p.value, p.col, p.row]) : null;
+    send({ t: 'start', b: boardIdx, m: Math.round(window.TWEAKS.castleEnergy), spd: window.TWEAKS.speed, walls: g ? Array.from(g.walls) : null, pcs });
   }
 
   function hostTick(g, paused, now) {

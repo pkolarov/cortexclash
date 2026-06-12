@@ -1,17 +1,17 @@
 // Cortex Clash — offline cache (PWA)
 // Bump the version when you change game files so clients pick up the update.
-const CACHE = 'cortex-clash-v7';
+const CACHE = 'cortex-clash-v9';
 const APP_SHELL = [
   '.',
   'index.html',
   'manifest.webmanifest',
-  'game/sound.js?v=7',
-  'game/boards.js?v=7',
-  'game/engine.js?v=7',
-  'game/net.js?v=7',
-  'game/render.js?v=7',
-  'game/ai.js?v=7',
-  'game/main.js?v=7',
+  'game/sound.js?v=9',
+  'game/boards.js?v=9',
+  'game/engine.js?v=9',
+  'game/net.js?v=9',
+  'game/render.js?v=9',
+  'game/ai.js?v=9',
+  'game/main.js?v=9',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',
@@ -23,7 +23,11 @@ const APP_SHELL = [
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE).then(async (c) => {
-      await c.addAll(APP_SHELL.filter((u) => !u.startsWith('http')));
+      // {cache:'reload'} bypasses the HTTP cache so a new SW version can't bake
+      // a stale index.html / '.' into its fresh cache after an update
+      for (const u of APP_SHELL.filter((x) => !x.startsWith('http'))) {
+        try { await c.add(new Request(u, { cache: 'reload' })); } catch (err) {}
+      }
       // CDN assets: best effort — app must still install without network luck
       for (const u of APP_SHELL.filter((x) => x.startsWith('http'))) {
         try { await c.add(u); } catch (err) { /* fetched lazily later */ }
@@ -54,7 +58,12 @@ self.addEventListener('fetch', (e) => {
           caches.open(CACHE).then((c) => c.put(e.request, copy));
         }
         return res;
-      }).catch(() => caches.match('index.html'));
+      }).catch(() => {
+        // only fall back to the app shell for page navigations — never hand
+        // index.html's HTML body to a failed script/font/image request
+        if (e.request.mode === 'navigate') return caches.match('index.html');
+        return Response.error();
+      });
     })
   );
 });
