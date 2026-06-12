@@ -97,11 +97,15 @@
       SFX.cursor();
     },
     mute: () => { SFX.toggleMute(); },
+    // the SPLIT button now opens the explode picker for the selected piece
+    // (a discoverable alternative to double-tapping it)
     split: (pl) => {
       if (!g || g.over || paused) return;
-      if (NET.S.mode === 'guest') { NET.send({ t: 'split' }); return; }
       if (AI.S.ctls[pl]) return; // an AI controls this side
-      trySplit(g, pl);
+      const id = g.sel[pl];
+      const p = id && pieceById(g, id);
+      if (!p || p.path || p.value < 2) { SFX.deny(); return; }
+      openPicker(pl, id);
     },
     rematch: () => {
       if (NET.S.mode === 'guest') { NET.send({ t: 'rematch' }); SFX.cursor(); return; }
@@ -249,6 +253,17 @@
   function setSplit(v) { splitUI = v; window.SPLITUI = v; }
   function closeSplitUI() { setSplit(null); }
 
+  // explode the selected piece into a fragment picker. Clears the blue
+  // selection (local/host) so only the gold fragment cells show.
+  function openPicker(pl, pieceId) {
+    const p = pieceById(g, pieceId);
+    if (!p || p.path || p.value < 2) { SFX.deny(); return false; }
+    setSplit({ pl, pieceId, k: 0, t0: performance.now() / 1000 });
+    if (NET.S.mode !== 'guest' && g.sel[pl] === pieceId) g.sel[pl] = null;
+    SFX.select();
+    return true;
+  }
+
   // is (c,r) a legal landing cell for the currently-chosen fragment size?
   function splitDestLegal(c, r) {
     const su = splitUI;
@@ -268,6 +283,8 @@
     if (splitUI) { splitUI.k = k; SFX.cursor(); }
   };
 
+  const cellOf = (lx, ly) => [Math.floor((lx - BX) / CELL), Math.floor((ly - BY) / CELL)];
+
   canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     SFX.ensure();
@@ -275,41 +292,31 @@
     for (let i = UI.buttons.length - 1; i >= 0; i--) {
       const b = UI.buttons[i];
       const tx = b.abs ? x : lx, ty = b.abs ? y : ly;
-      if (tx >= b.x && tx <= b.x + b.w && ty >= b.y && ty <= b.y + b.h) { b.action(); return; }
-    }
-    if (screen === 'game' && g && !g.over && !paused && !netLost) {
-      const c = Math.floor((lx - BX) / CELL);
-      const r = Math.floor((ly - BY) / CELL);
-      if (!inBounds(c, r)) return;
-      try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-      const d = { c, r, pieceId: null, pl: -1, opened: false };
-      drags.set(e.pointerId, d);
-
-      // a board press while the picker is open either launches the chosen
-      // fragment at a gold cell or dismisses the picker (chip taps are buttons,
-      // handled above, so they never reach here)
-      if (splitUI) {
-        if (splitDestLegal(c, r)) { fireSplit(c, r); return; }
-        closeSplitUI();
-        return;
-      }
-
-      // double-tap on an own splittable piece explodes it into a fragment picker
-      const now = performance.now();
-      const dbl = now - lastTap.t < 350 && lastTap.c === c && lastTap.r === r;
-      lastTap = { t: now, c, r };
-      if (dbl) {
-        const sp = ownPieceAt(c, r);
-        if (sp && sp.value >= 2) {
-          setSplit({ pl: sp.owner, pieceId: sp.id, k: 0, t0: performance.now() / 1000 });
-          d.opened = true; // ignore this pointer's lift so it can't self-close
-          SFX.select();
+      if (tx >= b.x && tx <= b.x + b.w && ty >= b.y && ty <= b.y + b.h) {
+        // fragment chips: arm the size AND begin a drag from the chip, so the
+        // user can either tap a chip then tap a cell, or drag a chip to a cell.
+        // chipBox lets pointerup tell a tap-on-chip (arm only) from a drag-off.
+        if (b.chip != null && splitUI) {
+          splitUI.k = b.chip;
+          SFX.cursor();
+          try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+          drags.set(e.pointerId, { c: -1, r: -1, fromChip: true, chipBox: { x: b.x, y: b.y, w: b.w, h: b.h }, pieceId: null, pl: -1 });
           return;
         }
+        b.action();
+        return;
       }
-
+    }
+    if (screen === 'game' && g && !g.over && !paused && !netLost) {
+      const [c, r] = cellOf(lx, ly);
+      if (!inBounds(c, r)) return;
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+      drags.set(e.pointerId, { c, r, pieceId: null, pl: -1 });
+      // while the picker is open, board presses resolve on pointerup (tap a
+      // gold cell to launch, tap elsewhere to cancel)
+      if (splitUI) return;
       const sp = ownPieceAt(c, r);
-      if (sp) { d.pieceId = sp.id; d.pl = sp.owner; dispatchSelect(c, r); }
+      if (sp) { const d = drags.get(e.pointerId); d.pieceId = sp.id; d.pl = sp.owner; dispatchSelect(c, r); }
       else dispatchTap(c, r); // empty/enemy cell: move the selected piece here
     }
   });
@@ -318,16 +325,42 @@
     const drag = drags.get(e.pointerId);
     drags.delete(e.pointerId);
     if (!drag || screen !== 'game' || !g || g.over || paused || netLost) return;
-    if (drag.opened) return; // the gesture that opened the picker doesn't act on lift
     const { lx, ly } = toLogical(e);
-    const c = Math.floor((lx - BX) / CELL);
-    const r = Math.floor((ly - BY) / CELL);
-    if (!inBounds(c, r) || (c === drag.c && r === drag.r)) return; // pure tap
-    lastTap.t = 0; // a drag is not part of a double-tap
-    if (splitUI) {
-      if (splitDestLegal(c, r)) fireSplit(c, r); // dragged a chip onto a gold cell
-      return; // never close the picker on a stray lift
+    const [c, r] = cellOf(lx, ly);
+
+    // released after pressing a fragment chip. If the finger never left the
+    // chip it's just a tap (arm only — wait for a board tap). If it dragged off
+    // onto a gold cell, launch there.
+    if (drag.fromChip) {
+      const b = drag.chipBox;
+      const onChip = b && lx >= b.x && lx <= b.x + b.w && ly >= b.y && ly <= b.y + b.h;
+      if (!onChip && splitUI && inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
+      return;
     }
+
+    if (splitUI) {
+      const tap = c === drag.c && r === drag.r;
+      if (inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r); // tap/drag a gold cell
+      else if (tap) closeSplitUI();                                // tap elsewhere cancels
+      return; // a stray drag neither fires nor cancels
+    }
+
+    if (!inBounds(c, r) || (c === drag.c && r === drag.r)) {
+      // pure tap: detect a double-tap on an own splittable piece → explode.
+      // Detecting on the *second tap's release* (not the press) means a
+      // tap-then-drag is never mistaken for a double-tap.
+      if (inBounds(c, r)) {
+        const now = performance.now();
+        if (now - lastTap.t < 350 && lastTap.c === c && lastTap.r === r) {
+          const sp = ownPieceAt(c, r);
+          if (sp && sp.value >= 2) { openPicker(sp.owner, sp.id); lastTap.t = 0; return; }
+        }
+        lastTap = { t: now, c, r };
+      }
+      return;
+    }
+    // dragged to another cell: place the dragged piece there
+    lastTap.t = 0;
     if (drag.pieceId != null) dispatchPlace(drag.pl, drag.pieceId, c, r);
     else dispatchTap(c, r);
   });
@@ -336,6 +369,13 @@
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   function frame(now) {
+    // a thrown exception must never stop the loop — that would freeze the whole
+    // game. Whatever happens in the body, always reschedule the next frame.
+    try { frameBody(now); } catch (err) { if (window.console) console.error(err); }
+    requestAnimationFrame(frame);
+  }
+
+  function frameBody(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     const t = now / 1000;
@@ -371,7 +411,6 @@
     } else {
       drawTitle(ctx, boardIdx, t);
     }
-    requestAnimationFrame(frame);
   }
 
   // auto-join when opened via an invite link (#room=XXXX)

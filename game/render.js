@@ -488,8 +488,7 @@ function drawHud(ctx, g, pl, t, rotated) {
     rr(ctx, x2, y2, w2, h2, 16);
     ctx.fill(); ctx.stroke();
     ctx.restore();
-    const a = Math.floor(p.value / 2), b = p.value - a;
-    glowText(ctx, 'SPLIT ' + b + '+' + a, x2 + w2 / 2, y2 + h2 / 2 + 2, 20, col, 8);
+    glowText(ctx, '✶ SPLIT', x2 + w2 / 2, y2 + h2 / 2 + 2, 22, col, 8);
     addBtn(x2, y2, w2, h2, () => ACTIONS.split(pl), rotated);
   }
 }
@@ -610,7 +609,10 @@ function drawSplitUI(ctx, g, t) {
   }
 
   const cx = px(p.col) + CELL / 2, cy = py(p.row) + CELL / 2;
-  const pop = Math.min(1, (t - su.t0) * 6);
+  // clamp to [0,1] — t (rAF clock) can read a hair before t0 (performance.now
+  // at open), and a negative pop makes the burst-ring radius negative, which
+  // throws IndexSizeError in ctx.arc and would freeze the frame loop
+  const pop = Math.max(0, Math.min(1, (t - su.t0) * 6));
   const flipTok = (window.NET && NET.active()) ? NET.S.view === 1 : su.pl === 1;
 
   // burst ring around the exploding piece
@@ -660,7 +662,7 @@ function drawSplitUI(ctx, g, t) {
     ctx.textBaseline = 'middle';
     ctx.fillText(String(k), 0, 3);
     ctx.restore();
-    UI.buttons.push({ x: chx - R, y: chy - R, w: R * 2, h: R * 2, action: () => ACTIONS.chipPick(k) });
+    UI.buttons.push({ x: chx - R, y: chy - R, w: R * 2, h: R * 2, chip: k, action: () => ACTIONS.chipPick(k) });
   }
 
   // one-line hint, readable from the owner's seat, x-clamped so it never clips
