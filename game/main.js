@@ -300,7 +300,11 @@
           splitUI.k = b.chip;
           SFX.cursor();
           try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-          drags.set(e.pointerId, { c: -1, r: -1, fromChip: true, chipBox: { x: b.x, y: b.y, w: b.w, h: b.h }, pieceId: null, pl: -1 });
+          drags.set(e.pointerId, {
+            c: -1, r: -1, fromChip: true, chipBox: { x: b.x, y: b.y, w: b.w, h: b.h },
+            pieceId: null, pl: splitUI.pl, ox: b.x + b.w / 2, oy: b.y + b.h / 2,
+            lx, ly, startX: lx, startY: ly, moved: false,
+          });
           return;
         }
         b.action();
@@ -311,7 +315,7 @@
       const [c, r] = cellOf(lx, ly);
       if (!inBounds(c, r)) return;
       try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-      drags.set(e.pointerId, { c, r, pieceId: null, pl: -1 });
+      drags.set(e.pointerId, { c, r, pieceId: null, pl: -1, lx, ly, startX: lx, startY: ly, moved: false });
       // while the picker is open, board presses resolve on pointerup (tap a
       // gold cell to launch, tap elsewhere to cancel)
       if (splitUI) return;
@@ -364,9 +368,28 @@
     if (drag.pieceId != null) dispatchPlace(drag.pl, drag.pieceId, c, r);
     else dispatchTap(c, r);
   });
+  // track the finger while dragging so the renderer can draw a trail
+  canvas.addEventListener('pointermove', (e) => {
+    const d = drags.get(e.pointerId);
+    if (!d) return;
+    const { lx, ly } = toLogical(e);
+    d.lx = lx; d.ly = ly;
+    if (!d.moved && Math.hypot(lx - d.startX, ly - d.startY) > 16) d.moved = true;
+  });
   canvas.addEventListener('pointercancel', (e) => drags.delete(e.pointerId));
   canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // snapshot of in-progress drags the renderer reads each frame to draw trails
+  function buildDragVis() {
+    const out = [];
+    for (const d of drags.values()) {
+      if (!d.moved) continue;
+      if (d.fromChip) out.push({ kind: 'chip', pl: d.pl, ox: d.ox, oy: d.oy, lx: d.lx, ly: d.ly, k: splitUI ? splitUI.k : 0 });
+      else if (d.pieceId != null) out.push({ kind: 'piece', pl: d.pl, fromC: d.c, fromR: d.r, lx: d.lx, ly: d.ly, pieceId: d.pieceId });
+    }
+    window.DRAGVIS = out;
+  }
 
   function frame(now) {
     // a thrown exception must never stop the loop — that would freeze the whole
@@ -394,7 +417,9 @@
         else if (splitUI.k >= p.value) splitUI.k = 0;
       }
       window.SPLITUI = splitUI;
+      buildDragVis();
       drawGame(ctx, g, paused, t);
+      drawDragTrail(ctx, g, t);
       drawSplitUI(ctx, g, t);
       if (!g.over) AI.drawHud(ctx); // don't freeze a taunt/status on the win screen
       if (NET.S.mode === 'host') NET.hostTick(g, paused, now);

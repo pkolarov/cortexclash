@@ -583,6 +583,74 @@ function drawGame(ctx, g, paused, t) {
 }
 
 // ---------- double-tap split picker ----------
+// ---------- drag trail ----------
+// Reads window.DRAGVIS (set by main.js each frame) and draws a glowing tether
+// from a piece's home cell (or a fragment chip) to the finger, with a ghost
+// token riding the finger, so the player can see they're mid-drag.
+function drawDragTrail(ctx, g, t) {
+  const list = window.DRAGVIS;
+  if (!list || !list.length || !g) return;
+  ctx.save();
+  if (window.NET && NET.S.view === 1) { ctx.translate(W, H); ctx.rotate(Math.PI); }
+
+  for (const d of list) {
+    let ox, oy, col, label, flipTok, size, rad;
+    if (d.kind === 'piece') {
+      const p = pieceById(g, d.pieceId);
+      if (!p) continue;
+      ox = px(d.fromC) + CELL / 2; oy = py(d.fromR) + CELL / 2;
+      col = PLAYER_COLORS[d.pl];
+      label = String(p.value);
+      flipTok = (window.NET && NET.active()) ? NET.S.view === 1 : d.pl === 1;
+      size = 64 + p.value * 4; rad = Math.max(8, 30 - p.value * 3.5);
+      // faint outline of the home cell it lifts from
+      ctx.save();
+      ctx.strokeStyle = col; ctx.globalAlpha = 0.4; ctx.lineWidth = 3;
+      ctx.setLineDash([8, 8]); ctx.lineDashOffset = -t * 30;
+      rr(ctx, px(d.fromC) + 8, py(d.fromR) + 8, CELL - 16, CELL - 16, 12);
+      ctx.stroke();
+      ctx.restore();
+    } else { // chip fragment drag
+      ox = d.ox; oy = d.oy;
+      col = '#ffd23f';
+      label = d.k ? String(d.k) : '';
+      flipTok = (window.NET && NET.active()) ? NET.S.view === 1 : d.pl === 1;
+      size = 64; rad = 32;
+    }
+
+    // glowing dashed tether from home → finger
+    ctx.save();
+    ctx.strokeStyle = col; ctx.globalAlpha = 0.7; ctx.lineWidth = 5;
+    ctx.setLineDash([14, 12]); ctx.lineDashOffset = -t * 70;
+    ctx.shadowColor = col; ctx.shadowBlur = 12 * window.TWEAKS.glow;
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(d.lx, d.ly); ctx.stroke();
+    ctx.restore();
+
+    // ghost token riding the finger
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.translate(d.lx, d.ly);
+    ctx.shadowColor = col; ctx.shadowBlur = 22 * window.TWEAKS.glow;
+    ctx.fillStyle = d.kind === 'chip' ? PLAYER_DARK[d.pl] : PLAYER_DARK[d.pl];
+    if (d.kind === 'chip') { ctx.beginPath(); ctx.arc(0, 0, size / 2, 0, Math.PI * 2); ctx.fill(); }
+    else { rr(ctx, -size / 2, -size / 2, size, size, rad); ctx.fill(); }
+    ctx.strokeStyle = col; ctx.lineWidth = 5;
+    if (d.kind === 'chip') { ctx.beginPath(); ctx.arc(0, 0, size / 2, 0, Math.PI * 2); ctx.stroke(); }
+    else { rr(ctx, -size / 2, -size / 2, size, size, rad); ctx.stroke(); }
+    ctx.shadowBlur = 0;
+    if (label) {
+      if (flipTok) ctx.rotate(Math.PI);
+      ctx.fillStyle = d.kind === 'chip' ? '#ffd23f' : '#fff';
+      ctx.font = '30px ' + FONT;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, 0, 3);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+// ---------- double-tap split picker ----------
 // Reads window.SPLITUI ({pl, pieceId, k, t0}) set by main.js each frame.
 // Drawn after drawGame, so the guest's 180° view flip is reapplied here.
 function drawSplitUI(ctx, g, t) {
@@ -1123,4 +1191,4 @@ function drawJoin(ctx, code, t) {
   scanlines(ctx);
 }
 
-Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawSplitUI, drawTitle, drawPicker, drawLobby, drawJoin, drawOverlayMsg });
+Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawDragTrail, drawSplitUI, drawTitle, drawPicker, drawLobby, drawJoin, drawOverlayMsg });
