@@ -4,9 +4,11 @@
 'use strict';
 window.AI = (() => {
   const DIFFS = {
-    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18 },
-    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03 },
-    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0 },
+    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18, moves: 1 },
+    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1 },
+    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1 },
+    veryhard: { interval: 0.65, noise: 0, splitChance: 0.6, skip: 0, moves: 1 },
+    inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2 }, // flawless + two moves a turn
   };
 
   // every selectable opponent. `name` is the in-game HUD label (keep short).
@@ -14,6 +16,8 @@ window.AI = (() => {
     { id: 'cpu-easy', label: 'CPU · EASY', name: 'CPU EASY', kind: 'bot', diff: 'easy' },
     { id: 'cpu-normal', label: 'CPU · NORMAL', name: 'CPU', kind: 'bot', diff: 'normal' },
     { id: 'cpu-hard', label: 'CPU · HARD', name: 'CPU HARD', kind: 'bot', diff: 'hard' },
+    { id: 'cpu-veryhard', label: 'CPU · VERY HARD', name: 'V.HARD', kind: 'bot', diff: 'veryhard' },
+    { id: 'cpu-inhuman', label: 'CPU · INHUMAN', name: 'INHUMAN', kind: 'bot', diff: 'inhuman' },
     { id: 'claude-opus', label: 'CLAUDE OPUS 4.8', name: 'OPUS', kind: 'llm', provider: 'anthropic', model: 'claude-opus-4-8' },
     { id: 'claude-sonnet', label: 'CLAUDE SONNET 4.6', name: 'SONNET', kind: 'llm', provider: 'anthropic', model: 'claude-sonnet-4-6' },
     { id: 'claude-haiku', label: 'CLAUDE HAIKU 4.5', name: 'HAIKU', kind: 'llm', provider: 'anthropic', model: 'claude-haiku-4-5' },
@@ -22,7 +26,7 @@ window.AI = (() => {
     { id: 'gemini-35-flash', label: 'GEMINI 3.5 FLASH', name: 'GEMINI', kind: 'llm', provider: 'gemini', model: 'gemini-3.5-flash' },
   ];
   const CLAUDE_IDS = ['claude-opus', 'claude-sonnet', 'claude-haiku'];
-  const DIFF_IDS = ['cpu-easy', 'cpu-normal', 'cpu-hard'];
+  const DIFF_IDS = ['cpu-easy', 'cpu-normal', 'cpu-hard', 'cpu-veryhard', 'cpu-inhuman'];
 
   const PROVIDERS = {
     anthropic: { keyName: 'cc-key-anthropic', keyHint: 'Anthropic API key (sk-ant-...)' },
@@ -182,25 +186,35 @@ window.AI = (() => {
     return best ? splitMove(g, own, best.id, best.k, best.c, best.r) : false;
   }
 
+  // single best move for `own` right now (recomputed each call so multi-move
+  // turns don't re-pick a piece that's already launched)
+  function botBestMove(g, own, threats, noise) {
+    const mine = g.pieces.filter((p) => p.owner === own && !p.path);
+    if (!mine.length) return null;
+    const mk = g.castles[own];
+    let best = null, bestScore = -Infinity;
+    for (const p of mine) {
+      const leaveBonus = (p.col === mk.col && p.row === mk.row) ? 130 : 0; // own castle drains it
+      for (const m of legalMoves(g, p)) {
+        const s = scoreMove(g, own, p, m, threats) + leaveBonus + Math.random() * noise;
+        if (s > bestScore) { bestScore = s; best = { p, m }; }
+      }
+    }
+    return best && bestScore > 0 ? best : null;
+  }
+
   function botAct(g, ctl) {
     const own = ctl.own;
     const d = DIFFS[ctl.spec.diff];
     if (Math.random() < d.skip) return; // hesitation, keeps lower levels human
-    const threats = findThreats(g, own);
-    const mine = g.pieces.filter((p) => p.owner === own && !p.path);
-    if (!mine.length) return;
-    if (Math.random() < d.splitChance && botSplit(g, own, threats)) return;
-    let best = null, bestScore = -Infinity;
-    const mk = g.castles[own];
-    for (const p of mine) {
-      // standing on my own castle drains it — leaving is always urgent
-      const leaveBonus = (p.col === mk.col && p.row === mk.row) ? 130 : 0;
-      for (const m of legalMoves(g, p)) {
-        const s = scoreMove(g, own, p, m, threats) + leaveBonus + Math.random() * d.noise;
-        if (s > bestScore) { bestScore = s; best = { p, m }; }
-      }
+    if (!g.pieces.some((p) => p.owner === own && !p.path)) return;
+    if (Math.random() < d.splitChance && botSplit(g, own, findThreats(g, own))) return;
+    // top tiers commit several moves a turn — recompute between each
+    for (let i = 0; i < (d.moves || 1); i++) {
+      const best = botBestMove(g, own, findThreats(g, own), d.noise);
+      if (!best) break;
+      commandMove(g, best.p, best.m.c, best.m.r);
     }
-    if (best && bestScore > 0) commandMove(g, best.p, best.m.c, best.m.r);
   }
 
   // ---------- LLM opponents ----------
