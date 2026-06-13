@@ -1250,7 +1250,9 @@ function drawLobby(ctx, boardIdx, t) {
   });
 
   const bw2 = 620, bh2 = 104;
-  drawBigBtn(ctx, W / 2 - bw2 / 2, 1075, bw2, bh2, 'SHARE INVITE LINK', '#52ff9d', t, false, 24);
+  // label matches what the device actually does (share sheet vs clipboard copy)
+  const shareLabel = NET.canShare() ? 'SHARE INVITE LINK' : 'COPY INVITE LINK';
+  drawBigBtn(ctx, W / 2 - bw2 / 2, 1075, bw2, bh2, shareLabel, '#52ff9d', t, false, 24);
   UI.buttons.push({ x: W / 2 - bw2 / 2, y: 1075, w: bw2, h: bh2, action: ACTIONS.shareLink });
   if (NET.S.copyMsg) glowText(ctx, NET.S.copyMsg, W / 2, 1230, 17, '#ffd23f', 6);
 

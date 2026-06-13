@@ -228,21 +228,27 @@ const NET = (() => {
     }
   }
 
-  // Native share sheet (phones) with a clipboard-copy fallback on desktop.
+  const canShare = () => typeof navigator !== 'undefined' && !!navigator.share;
+
+  // ALWAYS copy the link to the clipboard (reliable everywhere), and on devices
+  // with a native share sheet also offer to send it. Fire the clipboard write
+  // without awaiting so navigator.share still counts as a direct user gesture.
   function shareLink() {
     const l = inviteLink();
     if (!l) { S.copyMsg = 'NO LINK YET'; return; }
-    if (navigator.share) {
+    let copied = false;
+    if (navigator.clipboard) { navigator.clipboard.writeText(l).then(() => {}, () => {}); copied = true; }
+    if (canShare()) {
       navigator.share({ title: 'Cortex Clash', text: '⚔ I challenge you to a Cortex Clash duel! Tap to join:', url: l })
         .then(() => { S.copyMsg = 'INVITE SHARED!'; })
-        .catch((e) => { if (e && e.name === 'AbortError') return; copyLink(); }); // cancelled → ignore; else copy
+        .catch(() => { S.copyMsg = copied ? 'LINK COPIED — SEND IT!' : 'COPY THE CODE INSTEAD'; });
     } else {
-      copyLink();
+      S.copyMsg = copied ? 'LINK COPIED — SEND IT!' : 'COPY BLOCKED — SHARE THE CODE';
     }
   }
 
   function bind(handlers) { H = handlers || {}; }
 
-  return { S, ALPHA, active, myPlayer, hostRoom, join, leave, bind, send, sendStart, hostTick, guestSmooth, unpackInto, copyLink, shareLink };
+  return { S, ALPHA, active, myPlayer, hostRoom, join, leave, bind, send, sendStart, hostTick, guestSmooth, unpackInto, copyLink, shareLink, canShare };
 })();
 window.NET = NET;
