@@ -329,6 +329,12 @@
         return;
       }
     }
+    // paused: the overlay says "tap to resume" — so a tap anywhere (that didn't
+    // hit a button above, e.g. mute) resumes the match
+    if (screen === 'game' && g && !g.over && paused && !netLost) {
+      ACTIONS.pause();
+      return;
+    }
     if (screen === 'game' && g && !g.over && !paused && !netLost) {
       const [c, r] = cellOf(lx, ly);
       if (!inBounds(c, r)) return;
