@@ -443,6 +443,8 @@
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     const t = now / 1000;
+    // 80s menu tune on the menus, silence during a match (idempotent each frame)
+    if (screen === 'game') SFX.music.stop(); else SFX.music.start();
     UI.buttons.length = 0;
     if (screen === 'game' && g) {
       if (NET.S.mode === 'guest') {
