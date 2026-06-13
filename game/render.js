@@ -415,28 +415,93 @@ function drawToken(ctx, g, p, t) {
 }
 
 // ---------- fx ----------
-function drawFx(ctx, g) {
+function drawFx(ctx, g, t) {
   for (const f of g.fx) {
     const cx = px(f.c) + CELL / 2, cy = py(f.r) + CELL / 2;
     const col = f.owner != null ? PLAYER_COLORS[f.owner] : '#ffffff';
-    const k = f.t / 0.8;
+    const k = Math.min(1, f.t / 0.9);    // 0..1 progress
+    const m = f.m || 1;                   // value/magnitude
+    const inv = 1 - k;
     ctx.save();
     if (f.type === 'boom') {
-      for (let i = 0; i < 10; i++) {
-        const a = (i / 10) * Math.PI * 2 + f.c * 3 + f.r;
-        const d = 14 + k * 90;
-        ctx.globalAlpha = 1 - k;
+      // value-scaled debris burst + white core flash
+      const n = 8 + Math.min(16, m * 2);
+      const reach = 38 + m * 14;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + f.c * 3 + f.r;
+        const d = 10 + k * reach;
+        ctx.globalAlpha = inv;
         ctx.fillStyle = i % 2 ? col : '#ffd23f';
-        const s = 12 * (1 - k) + 3;
+        const s = (9 + m) * inv + 2;
         ctx.fillRect(cx + Math.cos(a) * d - s / 2, cy + Math.sin(a) * d - s / 2, s, s);
       }
+      ctx.globalAlpha = inv * 0.85;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(cx, cy, (16 + m * 4) * inv, 0, Math.PI * 2); ctx.fill();
+    } else if (f.type === 'shock') {
+      // bright expanding shockwave ring, scaled by attacker value
+      for (let r = 0; r < 2; r++) {
+        ctx.globalAlpha = inv * (r ? 0.4 : 0.85);
+        ctx.strokeStyle = r ? '#ffffff' : col;
+        ctx.lineWidth = (7 + m) * inv + 1;
+        ctx.beginPath(); ctx.arc(cx, cy, (18 + m * 9) * k + r * 12, 0, Math.PI * 2); ctx.stroke();
+      }
+    } else if (f.type === 'clash') {
+      // sharp radial impact spikes + flash where a defender held the line
+      const spikes = 6 + Math.min(8, m);
+      ctx.globalAlpha = inv;
+      ctx.strokeStyle = '#ffd23f';
+      ctx.shadowColor = '#ffd23f'; ctx.shadowBlur = 12 * window.TWEAKS.glow;
+      ctx.lineWidth = 4 * inv + 1;
+      for (let i = 0; i < spikes; i++) {
+        const a = (i / spikes) * Math.PI * 2 + f.r;
+        const r0 = 8, r1 = 16 + m * 6 + k * 34;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+        ctx.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = inv * 0.7;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(cx, cy, 14 * inv, 0, Math.PI * 2); ctx.fill();
+    } else if (f.type === 'dmg') {
+      // floating "-N" damage number, rising and fading, oriented to the victim
+      const rise = k * 78;
+      ctx.globalAlpha = inv;
+      const flip = (window.NET && NET.active()) ? NET.S.view === 1 : f.owner === 1;
+      ctx.translate(cx, cy - 26 - rise);
+      if (flip) ctx.rotate(Math.PI);
+      ctx.font = Math.round(42 - k * 10) + 'px ' + FONT;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 6; ctx.strokeStyle = '#2a060c';
+      ctx.shadowColor = '#ff3344'; ctx.shadowBlur = 14 * window.TWEAKS.glow;
+      ctx.strokeText('-' + m, 0, 0);
+      ctx.fillStyle = '#ff5566';
+      ctx.fillText('-' + m, 0, 0);
+    } else if (f.type === 'merge') {
+      // resulting value pops up briefly on a combine
+      const flip = (window.NET && NET.active()) ? NET.S.view === 1 : f.owner === 1;
+      ctx.globalAlpha = inv;
+      ctx.translate(cx, cy - 20 - k * 40);
+      if (flip) ctx.rotate(Math.PI);
+      ctx.font = Math.round(34 - k * 8) + 'px ' + FONT;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = '#52ff9d'; ctx.shadowBlur = 12 * window.TWEAKS.glow;
+      ctx.fillStyle = '#9dffce';
+      ctx.fillText('+', 0, 0);
     } else if (f.type === 'ring' || f.type === 'power' || f.type === 'shield') {
-      ctx.globalAlpha = 1 - k;
+      ctx.globalAlpha = inv;
       ctx.strokeStyle = f.type === 'shield' ? '#e8f6ff' : col;
-      ctx.lineWidth = 6 * (1 - k) + 1;
+      ctx.lineWidth = 6 * inv + 1;
+      if (f.type === 'shield') { ctx.shadowColor = '#e8f6ff'; ctx.shadowBlur = 16 * window.TWEAKS.glow; }
       ctx.beginPath();
-      ctx.arc(cx, cy, 20 + k * 70, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 20 + k * (66 + m * 5), 0, Math.PI * 2);
       ctx.stroke();
+      if (f.type === 'shield') {
+        ctx.globalAlpha = inv * 0.6;
+        ctx.beginPath(); ctx.arc(cx, cy, 12 + k * 30, 0, Math.PI * 2); ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -550,7 +615,7 @@ function drawGame(ctx, g, paused, t) {
   const still = g.pieces.filter((p) => !p.path);
   for (const p of still) drawToken(ctx, g, p, t);
   for (const p of moving) drawToken(ctx, g, p, t);
-  drawFx(ctx, g);
+  drawFx(ctx, g, t);
 
   // bottom HUD (player 0)
   ctx.save();
@@ -566,6 +631,16 @@ function drawGame(ctx, g, paused, t) {
   ctx.restore();
 
   ctx.restore();
+
+  // combat screen flash — a brief additive bloom on big hits/kills
+  if (g.flash > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = Math.min(0.5, g.flash);
+    ctx.fillStyle = 'rgba(120,150,255,1)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
 
   if (paused && !g.over) drawOverlayMsg(ctx, 'PAUSED', '#aebcff', 'TAP ▶ TO RESUME');
 

@@ -71,7 +71,7 @@ function makeGame(boardIdx) {
   return {
     boardIdx, walls, castles, pieces, powerups: [],
     sel: [null, null], time: 0, powerTimer: 6, fx: [],
-    winner: -1, over: false, overT: 0, shake: 0, nextId: pid,
+    winner: -1, over: false, overT: 0, shake: 0, flash: 0, nextId: pid,
   };
 }
 
@@ -158,27 +158,39 @@ function removePiece(g, p) {
   for (const pl of [0, 1]) if (g.sel[pl] === p.id) g.sel[pl] = null;
 }
 
-function addFx(g, type, c, r, owner) { g.fx.push({ type, c, r, owner, t: 0 }); }
+// m = a magnitude/value carried with the fx so the renderer can scale it and
+// draw damage numbers. Synced to the guest in net.js.
+function addFx(g, type, c, r, owner, m) { g.fx.push({ type, c, r, owner, t: 0, m: m || 0 }); }
 
 function combat(g, atk, def) {
-  g.shake = 1;
+  const av = atk.value, dv = def.value;
+  // heavier clashes shake harder
+  g.shake = Math.max(g.shake, Math.min(1.8, 0.5 + (av + dv) * 0.11));
   if (def.shield) {
     def.shield = false;
-    addFx(g, 'shield', def.col, def.row, def.owner);
-    addFx(g, 'boom', atk.col, atk.row, atk.owner);
+    addFx(g, 'shield', def.col, def.row, def.owner, dv);
+    addFx(g, 'boom', atk.col, atk.row, atk.owner, av);
     removePiece(g, atk);
-    SFX.hit();
+    SFX.shieldBlock();
     return;
   }
-  def.value -= atk.value;
+  // floating "-N" damage number over the defender, oriented to its owner's seat
+  addFx(g, 'dmg', def.col, def.row, def.owner, av);
+  def.value -= av;
   if (def.value <= 0) {
-    addFx(g, 'boom', def.col, def.row, def.owner);
+    // kill: big value-scaled boom + shockwave + a screen flash
+    addFx(g, 'boom', def.col, def.row, def.owner, dv);
+    addFx(g, 'shock', def.col, def.row, atk.owner, av);
+    g.flash = Math.min(0.55, g.flash + 0.12 + dv * 0.05);
     removePiece(g, def);
-    SFX.boom();
+    SFX.boom(dv);
   } else {
-    addFx(g, 'boom', atk.col, atk.row, atk.owner);
+    // defender holds: a sharp clash spark at the defender, attacker bursts
+    addFx(g, 'clash', def.col, def.row, def.owner, av);
+    addFx(g, 'boom', atk.col, atk.row, atk.owner, av);
+    g.flash = Math.min(0.4, g.flash + 0.06 + av * 0.03);
     removePiece(g, atk);
-    SFX.hit();
+    SFX.hit(av, dv);
   }
 }
 
@@ -207,8 +219,9 @@ function arrive(g, p) {
     sp.shield = sp.shield || p.shield;
     sp.charged = sp.charged || p.charged;
     removePiece(g, p);
-    addFx(g, 'ring', c, r, sp.owner);
-    SFX.combine();
+    addFx(g, 'ring', c, r, sp.owner, sp.value);
+    addFx(g, 'merge', c, r, sp.owner, sp.value);
+    SFX.combine(sp.value);
     return;
   }
   if (sp) combat(g, p, sp);
@@ -245,8 +258,9 @@ function endGame(g, winner) {
 function updateGame(g, dt) {
   dt *= window.TWEAKS.speed;
   for (const f of g.fx) f.t += dt;
-  g.fx = g.fx.filter((f) => f.t < 0.8);
+  g.fx = g.fx.filter((f) => f.t < 0.9);
   g.shake = Math.max(0, g.shake - dt * 4);
+  g.flash = Math.max(0, g.flash - dt * 2.6);
   if (g.over) { g.overT += dt; return; }
   g.time += dt;
 
