@@ -3,12 +3,14 @@
 // AI owns side 1 (top), in watch mode controllers drive both sides.
 'use strict';
 window.AI = (() => {
+  // hunt  = how hard the bot chases enemy pieces it can profitably kill (0 = ignores them, just rushes the castle)
+  // safety = how much it avoids parking a piece where the enemy can kill it for free next turn
   const DIFFS = {
-    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18, moves: 1 },
-    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1 },
-    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1 },
-    veryhard: { interval: 0.65, noise: 0, splitChance: 0.6, skip: 0, moves: 1 },
-    inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2 }, // flawless + two moves a turn
+    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18, moves: 1, hunt: 0, safety: 0 },
+    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1, hunt: 0.35, safety: 0.25 },
+    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1, hunt: 0.8, safety: 0.6 },
+    veryhard: { interval: 0.65, noise: 0, splitChance: 0.6, skip: 0, moves: 1, hunt: 1.1, safety: 0.9 },
+    inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2, hunt: 1.4, safety: 1 }, // flawless + two moves a turn
   };
 
   // every selectable opponent. `name` is the in-game HUD label (keep short).
@@ -103,6 +105,57 @@ window.AI = (() => {
   // ---------- heuristic bot ----------
   const dist = (c1, r1, c2, r2) => Math.max(Math.abs(c1 - c2), Math.abs(r1 - r2));
 
+  // Could stationary piece q slide onto (c,r) on its next move? Mirrors the
+  // legalMoves geometry — straight/diagonal ray, range = 7-value, blocked by
+  // walls / pieces / castles in the path — but aimed at one target cell and
+  // assuming our piece is sitting there (so it's an attackable landing).
+  function canReach(g, q, c, r) {
+    if (!q || q.path) return false;
+    const dc = c - q.col, dr = r - q.row;
+    if (!dc && !dr) return false;
+    const adc = Math.abs(dc), adr = Math.abs(dr);
+    if (dc && dr && adc !== adr) return false;          // not a straight/diagonal line
+    const steps = Math.max(adc, adr);
+    if (steps > rangeOf(q)) return false;
+    const sx = Math.sign(dc), sy = Math.sign(dr);
+    for (let i = 1; i < steps; i++) {                   // the path up to the cell must be clear
+      const cc = q.col + sx * i, rr = q.row + sy * i;
+      if (g.walls.has(cellKey(cc, rr)) || stationaryAt(g, cc, rr) || castleAt(g, cc, rr)) return false;
+    }
+    return true;
+  }
+
+  // strongest enemy value that could land on (c,r) next turn (0 = nobody can).
+  // ignoreId skips the piece that's about to vacate its own square.
+  function threatAt(g, own, c, r, ignoreId) {
+    let mx = 0;
+    for (const q of g.pieces) {
+      if (q.owner === own || q.path || q.id === ignoreId) continue;
+      if (canReach(g, q, c, r) && q.value > mx) mx = q.value;
+    }
+    return mx;
+  }
+
+  // value our piece would carry after committing m (a charge powerup grows it)
+  function landValue(g, p, m) {
+    if (m.kind === 'power') { const u = powerupAt(g, m.c, m.r); if (u && u.type === 'charge') return Math.min(MAXV, p.value + 2); }
+    return p.value;
+  }
+
+  // Penalty for landing on a cell where an enemy can kill us next turn. A clean
+  // kill or powerup grab into danger is roughly a trade (mild); a plain advance
+  // into a kill zone just hands the piece away (steep). A shield rides out one
+  // hit, so it isn't "free". t < v means any attacker there would die instead.
+  function dangerPenalty(g, own, p, m, safety) {
+    if (safety <= 0 || p.shield || m.kind === 'combine') return 0;
+    const v = landValue(g, p, m);
+    const t = threatAt(g, own, m.c, m.r, p.id);
+    if (t < v) return 0;
+    if (m.kind === 'attack') return safety * (v * 6 + 8);
+    if (m.kind === 'castle') return safety * (v * 8 + 14);
+    return safety * (v * 15 + 26);
+  }
+
   function findThreats(g, own) {
     const mk = g.castles[own];
     const out = [];
@@ -116,7 +169,7 @@ window.AI = (() => {
     return out;
   }
 
-  function scoreMove(g, own, p, m, threats) {
+  function scoreMove(g, own, p, m, threats, sk) {
     const ek = g.castles[1 - own], mk = g.castles[own];
     const lowEnergy = mk.energy < mk.max * 0.55;
     // a piece sitting on the enemy castle pays 1 value to leave; a value-1
@@ -126,13 +179,14 @@ window.AI = (() => {
       // mildly discourage abandoning a live siege when the castle isn't dead yet
       if (ek.energy > 0) return -40 + p.value;
     }
-    if (m.kind === 'castle') return 200 + p.value * 10;
-    if (m.kind === 'attack') {
+    let s;
+    if (m.kind === 'castle') {
+      s = 200 + p.value * 10;
+    } else if (m.kind === 'attack') {
       const t = stationaryAt(g, m.c, m.r);
       if (!t) return -999;
-      let s;
       if (t.shield) s = p.value === 1 ? 25 : 8 - p.value * 4;
-      else if (p.value >= t.value) s = 55 + t.value * 6;   // clean kill
+      else if (p.value >= t.value) s = 55 + t.value * 6;   // clean kill, we survive
       else s = p.value * 5 - 14;                           // chip damage, lose piece
       const dHome = dist(t.col, t.row, mk.col, mk.row);
       if (dHome <= 3) {
@@ -141,27 +195,39 @@ window.AI = (() => {
         if (lowEnergy) s += 35;
       }
       if (t.col === mk.col && t.row === mk.row) s += 120; // sieging my castle: kill it NOW
-      return s;
-    }
-    if (m.kind === 'power') {
+      // hunting the enemy's bigger pieces shrinks their offense — prize clean kills
+      if (!t.shield && p.value >= t.value) s += t.value * sk.hunt * 4;
+    } else if (m.kind === 'power') {
       const u = powerupAt(g, m.c, m.r);
-      let s = 45;
+      s = 45;
       if (u && u.type === 'heart' && mk.energy < mk.max * 0.6) s += 30;
       if (u && u.type === 'charge' && p.value <= 4) s += 10;
-      return s;
+    } else if (m.kind === 'combine') {
+      return 6;
+    } else {
+      // plain move: advance toward the enemy castle, fast pieces lead the push
+      s = (dist(p.col, p.row, ek.col, ek.row) - dist(m.c, m.r, ek.col, ek.row)) * (7 - p.value) * 2.2;
+      if (m.c === mk.col && m.r === mk.row) s -= 60; // never park on own castle
+      // hunt: close on enemy pieces this piece can profitably kill (value >= theirs),
+      // favouring big, nearby quarry. Turns the army from a castle-blob into hunters.
+      if (sk.hunt > 0) {
+        let hunt = 0;
+        for (const q of g.pieces) {
+          if (q.owner === own || q.path || p.value < q.value) continue;
+          const closer = dist(p.col, p.row, q.col, q.row) - dist(m.c, m.r, q.col, q.row);
+          if (closer > 0) hunt = Math.max(hunt, closer * (q.value + 2) * 1.6 / (1 + dist(m.c, m.r, q.col, q.row) * 0.15));
+        }
+        s += hunt * sk.hunt;
+      }
+      // fall back toward incoming attackers; the hotter the threat, the harder the pull
+      for (const t of threats) {
+        const gain = dist(p.col, p.row, t.c, t.r) - dist(m.c, m.r, t.c, t.r);
+        s += gain * (10 + (3 - t.d) * 4 + (lowEnergy ? 6 : 0));
+        // garrison: stand next to the castle so the intruder can be hit on arrival
+        if (gain > 0 && dist(m.c, m.r, mk.col, mk.row) === 1) s += 18;
+      }
     }
-    if (m.kind === 'combine') return 6;
-    // plain move: advance toward the enemy castle, fast pieces lead the push
-    let s = (dist(p.col, p.row, ek.col, ek.row) - dist(m.c, m.r, ek.col, ek.row)) * (7 - p.value) * 2.2;
-    if (m.c === mk.col && m.r === mk.row) s -= 60; // never park on own castle
-    // fall back toward incoming attackers; the hotter the threat, the harder the pull
-    for (const t of threats) {
-      const gain = dist(p.col, p.row, t.c, t.r) - dist(m.c, m.r, t.c, t.r);
-      s += gain * (10 + (3 - t.d) * 4 + (lowEnergy ? 6 : 0));
-      // garrison: stand next to the castle so the intruder can be hit on arrival
-      if (gain > 0 && dist(m.c, m.r, mk.col, mk.row) === 1) s += 18;
-    }
-    return s;
+    return s - dangerPenalty(g, own, p, m, sk.safety);
   }
 
   // Strategic split: peel a fast, low-value fragment off a big (value>=4)
@@ -169,7 +235,7 @@ window.AI = (() => {
   // a powerup, or make a favorable attack — while the parent keeps fighting.
   // Uses the same scoreMove the bot uses for normal moves, so the fragment goes
   // where it does the most damage. Returns true if it split.
-  function botSplit(g, own, threats) {
+  function botSplit(g, own, threats, sk) {
     if (g.pieces.filter((p) => p.owner === own).length >= 10) return false; // don't shred the army
     let best = null, bestScore = 35; // only split when the fragment move is clearly worth it
     for (const p of g.pieces) {
@@ -178,7 +244,7 @@ window.AI = (() => {
         if (k >= p.value) continue;
         const ghost = Object.assign({}, p, { value: k });
         for (const m of legalMoves(g, ghost)) {
-          const s = scoreMove(g, own, ghost, m, threats);
+          const s = scoreMove(g, own, ghost, m, threats, sk);
           if (s > bestScore) { bestScore = s; best = { id: p.id, k, c: m.c, r: m.r }; }
         }
       }
@@ -188,7 +254,7 @@ window.AI = (() => {
 
   // single best move for `own` right now (recomputed each call so multi-move
   // turns don't re-pick a piece that's already launched)
-  function botBestMove(g, own, threats, noise) {
+  function botBestMove(g, own, threats, noise, sk) {
     const mine = g.pieces.filter((p) => p.owner === own && !p.path);
     if (!mine.length) return null;
     const mk = g.castles[own];
@@ -196,7 +262,7 @@ window.AI = (() => {
     for (const p of mine) {
       const leaveBonus = (p.col === mk.col && p.row === mk.row) ? 130 : 0; // own castle drains it
       for (const m of legalMoves(g, p)) {
-        const s = scoreMove(g, own, p, m, threats) + leaveBonus + Math.random() * noise;
+        const s = scoreMove(g, own, p, m, threats, sk) + leaveBonus + Math.random() * noise;
         if (s > bestScore) { bestScore = s; best = { p, m }; }
       }
     }
@@ -208,10 +274,10 @@ window.AI = (() => {
     const d = DIFFS[ctl.spec.diff];
     if (Math.random() < d.skip) return; // hesitation, keeps lower levels human
     if (!g.pieces.some((p) => p.owner === own && !p.path)) return;
-    if (Math.random() < d.splitChance && botSplit(g, own, findThreats(g, own))) return;
+    if (Math.random() < d.splitChance && botSplit(g, own, findThreats(g, own), d)) return;
     // top tiers commit several moves a turn — recompute between each
     for (let i = 0; i < (d.moves || 1); i++) {
-      const best = botBestMove(g, own, findThreats(g, own), d.noise);
+      const best = botBestMove(g, own, findThreats(g, own), d.noise, d);
       if (!best) break;
       commandMove(g, best.p, best.m.c, best.m.r);
     }
