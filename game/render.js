@@ -261,6 +261,124 @@ function drawPowerup(ctx, u, t) {
 }
 
 // ---------- pieces ----------
+// The token body at an arbitrary pixel center — shared by the in-game tokens
+// and the title-screen battle so they look identical. o = options.
+function drawTokenBody(ctx, cx, cy, value, owner, o) {
+  o = o || {};
+  const col = PLAYER_COLORS[owner];
+  const size = 68 + value * 4;
+  const rad = Math.max(8, 30 - value * 3.5);
+  const t = o.t || 0;
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (o.flip) ctx.rotate(Math.PI);
+  ctx.translate(0, o.bob || 0);
+
+  if (o.boosted) {
+    ctx.save();
+    ctx.strokeStyle = '#ffd23f';
+    ctx.globalAlpha = 0.75;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([10, 12]);
+    ctx.lineDashOffset = -t * 60;
+    ctx.beginPath();
+    ctx.arc(0, 0, size / 2 + 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.shadowColor = col;
+  ctx.shadowBlur = (o.sel ? 26 : 14) * window.TWEAKS.glow;
+  ctx.fillStyle = PLAYER_DARK[owner];
+  rr(ctx, -size / 2, -size / 2, size, size, rad);
+  ctx.fill();
+  ctx.strokeStyle = col;
+  ctx.lineWidth = o.sel ? 6 : (value >= 5 ? 5 : 4);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  const ey = -size * 0.32;
+  if (value === 3) { // visor band
+    ctx.fillStyle = 'rgba(110,140,255,0.3)';
+    rr(ctx, -size / 2 + 10, ey - 5, size - 20, 24, 6);
+    ctx.fill();
+  }
+  // eyes
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(-22, ey, 14, 14);
+  ctx.fillRect(8, ey, 14, 14);
+  ctx.fillStyle = '#10122a';
+  ctx.fillRect(-18, ey + 4, 7, 7);
+  ctx.fillRect(12, ey + 4, 7, 7);
+
+  if (value === 1) { // speedster cheek dashes
+    ctx.fillStyle = col;
+    ctx.fillRect(-size / 2 + 4, ey + 18, 10, 4);
+    ctx.fillRect(size / 2 - 14, ey + 18, 10, 4);
+  }
+  if (value === 2) { // antenna
+    ctx.fillStyle = col;
+    ctx.fillRect(-3, -size / 2 - 10, 6, 12);
+    ctx.fillRect(-7, -size / 2 - 18, 14, 9);
+  }
+  if (value >= 4) { // brows — angrier with weight
+    const tilt = 0.2 + (value - 4) * 0.12;
+    ctx.fillStyle = col;
+    ctx.save();
+    ctx.translate(-15, ey - 7);
+    ctx.rotate(tilt);
+    ctx.fillRect(-11, -3, 22, 6);
+    ctx.restore();
+    ctx.save();
+    ctx.translate(15, ey - 7);
+    ctx.rotate(-tilt);
+    ctx.fillRect(-11, -3, 22, 6);
+    ctx.restore();
+  }
+  if (value >= 5) { // armor side plates
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(-size / 2 + 5, -4, 8, size * 0.4);
+    ctx.fillRect(size / 2 - 13, -4, 8, size * 0.4);
+  }
+  if (value === 6) { // rivets
+    ctx.fillStyle = col;
+    ctx.fillRect(-size / 2 + 9, size / 2 - 15, 7, 7);
+    ctx.fillRect(size / 2 - 16, size / 2 - 15, 7, 7);
+  }
+
+  ctx.font = (20 + value * 2) + 'px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (o.charged) {
+    ctx.fillStyle = '#ffd23f'; ctx.shadowColor = '#ffd23f'; ctx.shadowBlur = 10 * window.TWEAKS.glow;
+  } else {
+    ctx.fillStyle = '#ffffff';
+  }
+  ctx.fillText(String(value), 0, size * 0.18);
+  ctx.shadowBlur = 0;
+  if (o.charged) {
+    ctx.fillStyle = '#ffd23f';
+    drawPowerGlyph(ctx, 'charge', -size / 2 + 16, -size / 2 + 12, 16);
+  }
+
+  if (o.shield) {
+    ctx.strokeStyle = '#e8f6ff';
+    ctx.globalAlpha = 0.8 + 0.2 * Math.sin(t * 5);
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, size / 2 + 9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  if (o.boosted) {
+    ctx.fillStyle = '#ffd23f';
+    ctx.shadowColor = '#ffd23f';
+    ctx.shadowBlur = 8;
+    drawPowerGlyph(ctx, 'bolt', size / 2 - 6, -size / 2 + 6, 20);
+  }
+  ctx.restore();
+}
+
 function drawToken(ctx, g, p, t) {
   const [bc, br] = piecePos(p);
   const cx = BX + bc * CELL + CELL / 2;
@@ -268,7 +386,6 @@ function drawToken(ctx, g, p, t) {
   const col = PLAYER_COLORS[p.owner];
   const sel = g.sel[p.owner] === p.id;
   const boosted = p.boostUntil > g.time;
-  // heavier pieces are physically bigger and squarer; runts are small and round
   const size = 68 + p.value * 4;
   const rad = Math.max(8, 30 - p.value * 3.5);
 
@@ -290,121 +407,10 @@ function drawToken(ctx, g, p, t) {
     }
   }
 
-  ctx.save();
-  ctx.translate(cx, cy);
-  // mirror P2's tokens only in local face-to-face 2P (see textFlip)
-  const flipTok = textFlip(p.owner);
-  if (flipTok) ctx.rotate(Math.PI);
   const bob = p.path ? 0 : Math.sin(t * 2.2 + p.id) * 2;
-  ctx.translate(0, bob);
-
-  // speed-boost aura: rotating dashed ring
-  if (boosted) {
-    ctx.save();
-    ctx.strokeStyle = '#ffd23f';
-    ctx.globalAlpha = 0.75;
-    ctx.lineWidth = 3;
-    ctx.setLineDash([10, 12]);
-    ctx.lineDashOffset = -t * 60;
-    ctx.beginPath();
-    ctx.arc(0, 0, size / 2 + 14, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  ctx.shadowColor = col;
-  ctx.shadowBlur = (sel ? 26 : 14) * window.TWEAKS.glow;
-  ctx.fillStyle = PLAYER_DARK[p.owner];
-  rr(ctx, -size / 2, -size / 2, size, size, rad);
-  ctx.fill();
-  ctx.strokeStyle = col;
-  ctx.lineWidth = sel ? 6 : (p.value >= 5 ? 5 : 4);
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-
-  const ey = -size * 0.32;
-  if (p.value === 3) { // visor band
-    ctx.fillStyle = 'rgba(110,140,255,0.3)';
-    rr(ctx, -size / 2 + 10, ey - 5, size - 20, 24, 6);
-    ctx.fill();
-  }
-  // eyes
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(-22, ey, 14, 14);
-  ctx.fillRect(8, ey, 14, 14);
-  ctx.fillStyle = '#10122a';
-  ctx.fillRect(-18, ey + 4, 7, 7);
-  ctx.fillRect(12, ey + 4, 7, 7);
-
-  if (p.value === 1) { // speedster cheek dashes
-    ctx.fillStyle = col;
-    ctx.fillRect(-size / 2 + 4, ey + 18, 10, 4);
-    ctx.fillRect(size / 2 - 14, ey + 18, 10, 4);
-  }
-  if (p.value === 2) { // antenna
-    ctx.fillStyle = col;
-    ctx.fillRect(-3, -size / 2 - 10, 6, 12);
-    ctx.fillRect(-7, -size / 2 - 18, 14, 9);
-  }
-  if (p.value >= 4) { // brows — angrier with weight
-    const tilt = 0.2 + (p.value - 4) * 0.12;
-    ctx.fillStyle = col;
-    ctx.save();
-    ctx.translate(-15, ey - 7);
-    ctx.rotate(tilt);
-    ctx.fillRect(-11, -3, 22, 6);
-    ctx.restore();
-    ctx.save();
-    ctx.translate(15, ey - 7);
-    ctx.rotate(-tilt);
-    ctx.fillRect(-11, -3, 22, 6);
-    ctx.restore();
-  }
-  if (p.value >= 5) { // armor side plates
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    ctx.fillRect(-size / 2 + 5, -4, 8, size * 0.4);
-    ctx.fillRect(size / 2 - 13, -4, 8, size * 0.4);
-  }
-  if (p.value === 6) { // rivets
-    ctx.fillStyle = col;
-    ctx.fillRect(-size / 2 + 9, size / 2 - 15, 7, 7);
-    ctx.fillRect(size / 2 - 16, size / 2 - 15, 7, 7);
-  }
-
-  // number — gold when permanently charged by a +2 power-up
-  ctx.font = (20 + p.value * 2) + 'px ' + FONT;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  if (p.charged) {
-    ctx.fillStyle = '#ffd23f';
-    ctx.shadowColor = '#ffd23f';
-    ctx.shadowBlur = 10 * window.TWEAKS.glow;
-  } else {
-    ctx.fillStyle = '#ffffff';
-  }
-  ctx.fillText(String(p.value), 0, size * 0.18);
-  ctx.shadowBlur = 0;
-  if (p.charged) { // little charge spark
-    ctx.fillStyle = '#ffd23f';
-    drawPowerGlyph(ctx, 'charge', -size / 2 + 16, -size / 2 + 12, 16);
-  }
-
-  if (p.shield) {
-    ctx.strokeStyle = '#e8f6ff';
-    ctx.globalAlpha = 0.8 + 0.2 * Math.sin(t * 5);
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(0, 0, size / 2 + 9, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-  if (boosted) {
-    ctx.fillStyle = '#ffd23f';
-    ctx.shadowColor = '#ffd23f';
-    ctx.shadowBlur = 8;
-    drawPowerGlyph(ctx, 'bolt', size / 2 - 6, -size / 2 + 6, 20);
-  }
-  ctx.restore();
+  drawTokenBody(ctx, cx, cy, p.value, p.owner, {
+    t, bob, sel, flip: textFlip(p.owner), charged: p.charged, shield: p.shield, boosted,
+  });
 
   if (sel) { // pulsing bracket corners (not rotated, just geometry)
     const o = 4 + 3 * Math.sin(t * 7), l = 22, hs = size / 2 + 8;
@@ -432,14 +438,23 @@ const fxq = (v) => Math.round(v / FX_GRID) * FX_GRID;
 function blk(ctx, x, y, s, c) { ctx.fillStyle = c; ctx.fillRect(fxq(x - s / 2), fxq(y - s / 2), Math.round(s), Math.round(s)); }
 
 function drawFx(ctx, g, t) {
-  const FR = 7;                                     // discrete animation frames
   for (const f of g.fx) {
-    const cx = px(f.c) + CELL / 2, cy = py(f.r) + CELL / 2;
+    drawFxAt(ctx, px(f.c) + CELL / 2, py(f.r) + CELL / 2, f);
+  }
+}
+
+// One effect at an arbitrary pixel center — shared by in-game combat and the
+// title battle. f carries {type, owner, t, m, c, r} (c/r only used to vary the
+// debris angle, harmless if absent).
+function drawFxAt(ctx, cx, cy, f) {
+  const FR = 7;                                     // discrete animation frames
+  {
     const col = f.owner != null ? PLAYER_COLORS[f.owner] : '#ffffff';
     const k = Math.min(1, f.t / 0.9);
     const step = Math.min(FR - 1, Math.floor(k * FR));   // 0..FR-1, steppy
     const sp = step / (FR - 1);                          // stepped phase 0..1
     const m = f.m || 1;
+    const fc = f.c || 0, fr = f.r || 0;
     ctx.save();
     ctx.shadowColor = col; ctx.shadowBlur = 6 * window.TWEAKS.glow; // light CRT bloom, hard fills
 
@@ -448,7 +463,7 @@ function drawFx(ctx, g, t) {
       const arms = 8 + Math.min(8, m);
       const reach = 34 + m * 16;
       for (let i = 0; i < arms; i++) {
-        const a = (i / arms) * Math.PI * 2 + (f.c + f.r);
+        const a = (i / arms) * Math.PI * 2 + (fc + fr);
         for (let b = 0; b < 3; b++) {
           const d = sp * reach - b * 18;
           if (d < 0) continue;
@@ -961,85 +976,64 @@ function drawStars(ctx, t) {
 }
 
 // ---------- ambient battle behind the title logo ----------
-const TFX = { tokens: [], booms: [], spawnT: 0, lastT: 0 };
-const TFX_LANES = [115, 205, 295, 385, 470];
+// Real game tokens charge across and clash with the actual combat FX, so the
+// menu previews exactly how a match looks.
+const TFX = { tokens: [], fx: [], spawnT: 0, lastT: 0, id: 0 };
+const TFX_LANES = [150, 250, 360, 470];
+const TFX_SCALE = 0.72;
 
 function titleBattle(ctx, t) {
   const dt = Math.min(0.05, Math.max(0, t - TFX.lastT));
   TFX.lastT = t;
 
   TFX.spawnT -= dt;
-  if (TFX.spawnT <= 0 && TFX.tokens.length < 7) {
-    TFX.spawnT = 0.9 + Math.random() * 1.4;
+  if (TFX.spawnT <= 0 && TFX.tokens.length < 6) {
+    TFX.spawnT = 0.8 + Math.random() * 1.3;
     const owner = Math.random() < 0.5 ? 0 : 1;       // 0 cyan from left, 1 magenta from right
     const v = 1 + ((Math.random() * 6) | 0);
     TFX.tokens.push({
-      owner, v,
-      x: owner === 0 ? -50 : W + 50,
-      y: TFX_LANES[(Math.random() * TFX_LANES.length) | 0] + (Math.random() * 24 - 12),
-      vx: (owner === 0 ? 1 : -1) * (60 + (7 - v) * 38),
+      owner, v, id: ++TFX.id,
+      x: owner === 0 ? -60 : W + 60,
+      y: TFX_LANES[(Math.random() * TFX_LANES.length) | 0] + (Math.random() * 30 - 15),
+      vx: (owner === 0 ? 1 : -1) * (70 + (7 - v) * 34),
     });
   }
 
   for (const k of TFX.tokens) k.x += k.vx * dt;
 
-  // clashes: opposing tokens in the same lane collide; bigger one survives
+  // clashes: opposing tokens overlap → real combat resolution + the game's FX
   for (const a of TFX.tokens) {
     for (const b of TFX.tokens) {
       if (a === b || a.owner === b.owner || a.dead || b.dead) continue;
-      if (Math.abs(a.y - b.y) < 40 && Math.abs(a.x - b.x) < 44) {
+      if (Math.abs(a.y - b.y) < 50 && Math.abs(a.x - b.x) < 56) {
         const [w, l] = a.v >= b.v ? [a, b] : [b, a];
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, wv = w.v;
         l.dead = true;
+        TFX.fx.push({ type: 'dmg', owner: 0, m: wv, x: mx, y: my, t: 0 });
+        TFX.fx.push({ type: 'boom', owner: l.owner, m: l.v, x: l.x, y: l.y, t: 0 });
+        TFX.fx.push({ type: 'shock', owner: w.owner, m: wv, x: mx, y: my, t: 0 });
         w.v -= l.v;
-        if (w.v <= 0) w.dead = true;
-        TFX.booms.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, t: 0, owner: l.owner });
+        if (w.v <= 0) { w.dead = true; TFX.fx.push({ type: 'boom', owner: w.owner, m: wv, x: w.x, y: w.y, t: 0 }); }
       }
     }
   }
-  TFX.tokens = TFX.tokens.filter((k) => !k.dead && k.x > -80 && k.x < W + 80);
-  for (const bm of TFX.booms) bm.t += dt;
-  TFX.booms = TFX.booms.filter((bm) => bm.t < 0.6);
+  TFX.tokens = TFX.tokens.filter((k) => !k.dead && k.x > -90 && k.x < W + 90);
+  for (const f of TFX.fx) { f.t += dt; f.x += (f.vx || 0) * dt; }
+  TFX.fx = TFX.fx.filter((f) => f.t < 0.9);
 
+  // tokens (slightly dimmed so the logo reads over them)
   ctx.save();
-  ctx.globalAlpha = 0.55;
+  ctx.globalAlpha = 0.72;
   for (const k of TFX.tokens) {
-    const s = 36 + k.v * 5;
-    const col = PLAYER_COLORS[k.owner];
     ctx.save();
-    ctx.shadowColor = col;
-    ctx.shadowBlur = 10 * window.TWEAKS.glow;
-    ctx.fillStyle = PLAYER_DARK[k.owner];
-    rr(ctx, k.x - s / 2, k.y - s / 2, s, s, 10);
-    ctx.fill();
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 3;
-    rr(ctx, k.x - s / 2, k.y - s / 2, s, s, 10);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = col;
-    ctx.font = (14 + k.v * 2) + 'px ' + FONT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(k.v), k.x, k.y + 2);
-    ctx.restore();
-  }
-  for (const bm of TFX.booms) {
-    const p = bm.t / 0.6;
-    ctx.save();
-    ctx.globalAlpha = 0.8 * (1 - p);
-    ctx.strokeStyle = PLAYER_COLORS[bm.owner];
-    ctx.lineWidth = 4 * (1 - p) + 1;
-    ctx.beginPath();
-    ctx.arc(bm.x, bm.y, 8 + p * 52, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = '#fff';
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + bm.t * 3;
-      ctx.fillRect(bm.x + Math.cos(a) * p * 44 - 2, bm.y + Math.sin(a) * p * 44 - 2, 4, 4);
-    }
+    ctx.translate(k.x, k.y);
+    ctx.scale(TFX_SCALE, TFX_SCALE);
+    drawTokenBody(ctx, 0, 0, k.v, k.owner, { t, bob: Math.sin(t * 2.2 + k.id) * 2 });
     ctx.restore();
   }
   ctx.restore();
+  // FX at full punch — the same chunky pixel explosions as the game
+  for (const f of TFX.fx) drawFxAt(ctx, f.x, f.y, f);
 }
 
 function drawTitle(ctx, boardIdx, t) {
