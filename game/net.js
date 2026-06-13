@@ -74,6 +74,28 @@ const NET = (() => {
     return 'NETWORK ERROR — ' + String((e && e.type) || 'UNKNOWN').toUpperCase().replace(/-/g, ' ');
   }
 
+  // broker-socket hiccups (e.g. the tab gets backgrounded while the native
+  // share sheet is open) are recoverable — PeerJS keeps the same ID and we
+  // just re-open the signaling socket instead of killing the room
+  const RECOVERABLE = ['network', 'socket-error', 'socket-closed', 'server-error', 'disconnected'];
+  function tryReconnect() {
+    if (!peer || peer.destroyed || !peer.disconnected) return;
+    S.status = 'RECONNECTING…';
+    try { peer.reconnect(); } catch (e) {}
+  }
+  // returning to the foreground after sharing: re-establish the dropped socket
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && active()) tryReconnect();
+    });
+  }
+  function onPeerError(e, fatalMap) {
+    const ty = (e && e.type) || '';
+    if (fatalMap[ty]) { S.status = fatalMap[ty]; return; }
+    if (RECOVERABLE.indexOf(ty) >= 0) { S.status = 'RECONNECTING…'; setTimeout(tryReconnect, 600); return; }
+    S.status = netErrText(e);
+  }
+
   function onRemoteClosed() {
     if (!conn) return;
     conn = null;
@@ -91,7 +113,7 @@ const NET = (() => {
     S.mode = 'host'; S.view = 0; S.code = genCode(); S.status = 'OPENING ROOM…';
     if (libMissing()) return;
     peer = new Peer(PREFIX + S.code, { debug: 0 });
-    peer.on('open', () => { S.status = 'WAITING FOR PLAYER 2'; });
+    peer.on('open', () => { if (!S.connected) S.status = 'WAITING FOR PLAYER 2'; });
     peer.on('connection', (c) => {
       if (conn) { try { c.close(); } catch (e) {} return; } // room is full
       conn = c;
@@ -105,10 +127,8 @@ const NET = (() => {
       c.on('close', onRemoteClosed);
       c.on('error', onRemoteClosed);
     });
-    peer.on('error', (e) => {
-      if (e && e.type === 'unavailable-id') S.status = 'CODE CLASH — TAP CANCEL, RETRY';
-      else S.status = netErrText(e);
-    });
+    peer.on('disconnected', tryReconnect);
+    peer.on('error', (e) => onPeerError(e, { 'unavailable-id': 'CODE CLASH — TAP CANCEL, RETRY' }));
   }
 
   function join(code) {
@@ -118,16 +138,15 @@ const NET = (() => {
     if (libMissing()) return;
     peer = new Peer({ debug: 0 });
     peer.on('open', () => {
+      if (conn) return; // a reconnect to the broker — keep the existing data link
       conn = peer.connect(PREFIX + code, { reliable: true });
       conn.on('open', () => { S.connected = true; S.status = 'CONNECTED — STARTING…'; });
       conn.on('data', onGuestData);
       conn.on('close', onRemoteClosed);
       conn.on('error', onRemoteClosed);
     });
-    peer.on('error', (e) => {
-      if (e && e.type === 'peer-unavailable') S.status = 'GAME NOT FOUND — CHECK CODE';
-      else S.status = netErrText(e);
-    });
+    peer.on('disconnected', tryReconnect);
+    peer.on('error', (e) => onPeerError(e, { 'peer-unavailable': 'GAME NOT FOUND — CHECK CODE' }));
   }
 
   function onHostData(m) {

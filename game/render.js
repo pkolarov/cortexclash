@@ -1241,7 +1241,7 @@ function drawLobby(ctx, boardIdx, t) {
   drawCodeBoxes(ctx, NET.S.code, W / 2 - (4 * bw + 3 * gap) / 2, 445, bw, 180, gap, '#ffd23f', t, false);
 
   const st = NET.S.status || '';
-  const waiting = st.indexOf('WAITING') === 0 || st.indexOf('OPENING') === 0;
+  const waiting = st.indexOf('WAITING') === 0 || st.indexOf('OPENING') === 0 || st.indexOf('RECONNECT') === 0 || st.indexOf('PLAYER 2 CONNECTED') === 0;
   const dots = waiting ? '.'.repeat(1 + (Math.floor(t * 2) % 3)) : '';
   glowText(ctx, st + dots, W / 2, 725, 20, waiting ? '#52ff9d' : '#ff5566', 8);
 
@@ -1278,7 +1278,7 @@ function drawJoin(ctx, code, t) {
   drawCodeBoxes(ctx, code, W / 2 - (4 * bw + 3 * gap) / 2, 405, bw, 170, gap, '#ff3df0', t, true);
 
   const st = (NET.S.mode === 'guest' && NET.S.status) || '';
-  const busy = st.indexOf('CONNECT') === 0;
+  const busy = st.indexOf('CONNECT') === 0 || st.indexOf('RECONNECT') === 0;
   if (st) glowText(ctx, st, W / 2, 650, 18, busy ? '#52ff9d' : '#ff5566', 6);
 
   // keypad
@@ -1329,7 +1329,7 @@ function drawInvite(ctx, code, t) {
   drawCodeBoxes(ctx, code, W / 2 - (4 * bw + 3 * gap) / 2, 700, bw, 180, gap, '#ff3df0', t, false);
 
   const st = (NET.S.mode === 'guest' && NET.S.status) || 'CONNECTING';
-  const busy = st.indexOf('CONNECT') === 0;
+  const busy = st.indexOf('CONNECT') === 0 || st.indexOf('RECONNECT') === 0;
   const dots = busy ? '.'.repeat(1 + (Math.floor(t * 2) % 3)) : '';
   glowText(ctx, st + dots, W / 2, 985, 22, busy ? '#52ff9d' : '#ff5566', 8);
   glowText(ctx, busy ? 'YOU ARE PLAYER 2 — DROPPING IN…' : 'TAP CANCEL AND TRY THE LINK AGAIN', W / 2, 1075, 18, 'rgba(232,246,255,0.6)', 5);
