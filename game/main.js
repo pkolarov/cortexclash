@@ -172,7 +172,8 @@
       if (m.t === 'split') trySplit(g, 1);
     },
     onRemoteGone: () => {
-      if (screen === 'game') netLost = true;
+      if (screen === 'game' && !netLost) { netLost = true; SFX.alarm(); } // make it heard, not just shown
+      else if (screen === 'game') netLost = true;
       // lobby: NET resets status to WAITING and accepts a new guest
       // join: NET status shows the error on the join screen
     },

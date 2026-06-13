@@ -7,6 +7,7 @@ const NET = (() => {
   let sfxOrig = null;
   let soundQ = [];
   let lastSent = 0;
+  let hbTimer = null, lastRecvAt = 0; // heartbeat: detect a peer that vanished
   let H = {};
 
   const S = {
@@ -51,6 +52,7 @@ const NET = (() => {
   }
 
   function teardown() {
+    stopHeartbeat();
     try { if (conn) conn.close(); } catch (e) {}
     try { if (peer) peer.destroy(); } catch (e) {}
     conn = null; peer = null;
@@ -98,6 +100,7 @@ const NET = (() => {
 
   function onRemoteClosed() {
     if (!conn) return;
+    stopHeartbeat();
     conn = null;
     S.connected = false;
     soundQ = [];
@@ -121,6 +124,7 @@ const NET = (() => {
         S.connected = true;
         S.status = 'PLAYER 2 CONNECTED';
         wrapSounds();
+        startHeartbeat();
         if (H.onPeerJoined) H.onPeerJoined();
       });
       c.on('data', onHostData);
@@ -140,7 +144,7 @@ const NET = (() => {
     peer.on('open', () => {
       if (conn) return; // a reconnect to the broker — keep the existing data link
       conn = peer.connect(PREFIX + code, { reliable: true });
-      conn.on('open', () => { S.connected = true; S.status = 'CONNECTED — STARTING…'; });
+      conn.on('open', () => { S.connected = true; S.status = 'CONNECTED — STARTING…'; startHeartbeat(); });
       conn.on('data', onGuestData);
       conn.on('close', onRemoteClosed);
       conn.on('error', onRemoteClosed);
@@ -149,15 +153,32 @@ const NET = (() => {
     peer.on('error', (e) => onPeerError(e, { 'peer-unavailable': 'GAME NOT FOUND — CHECK CODE' }));
   }
 
+  // a peer that closes its tab often never fires a clean 'close', so each side
+  // pings every 1.5s and declares the opponent gone after ~6s of silence
+  function startHeartbeat() {
+    stopHeartbeat();
+    lastRecvAt = Date.now();
+    hbTimer = setInterval(() => {
+      if (!conn || !S.connected) return;
+      try { conn.send({ t: 'ping' }); } catch (e) {}
+      if (Date.now() - lastRecvAt > 6000) onRemoteClosed();
+    }, 1500);
+  }
+  function stopHeartbeat() { if (hbTimer) { clearInterval(hbTimer); hbTimer = null; } }
+
   function onHostData(m) {
     if (!m || typeof m !== 'object') return;
+    lastRecvAt = Date.now();
     if (m.t === 'bye') { onRemoteClosed(); return; }
+    if (m.t === 'ping') return;
     if (H.onGuestInput) H.onGuestInput(m);
   }
 
   function onGuestData(m) {
     if (!m || typeof m !== 'object') return;
+    lastRecvAt = Date.now();
     if (m.t === 'bye') { onRemoteClosed(); return; }
+    if (m.t === 'ping') return;
     if (m.t === 'start' && H.onGuestStart) {
       S.hostSpeed = m.spd || 1;
       H.onGuestStart(m.b, m.m, m.walls, m.pcs);
