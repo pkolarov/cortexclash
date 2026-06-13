@@ -1245,13 +1245,13 @@ function drawLobby(ctx, boardIdx, t) {
   const dots = waiting ? '.'.repeat(1 + (Math.floor(t * 2) % 3)) : '';
   glowText(ctx, st + dots, W / 2, 725, 20, waiting ? '#52ff9d' : '#ff5566', 8);
 
-  ['PLAYER 2: OPEN THIS GAME,', 'TAP "JOIN ONLINE"', 'AND ENTER THE CODE'].forEach((l, i) => {
+  ['SHARE THE LINK — PLAYER 2 TAPS IT', 'TO DROP STRAIGHT INTO YOUR GAME.', 'OR THEY CAN ENTER THE CODE ABOVE.'].forEach((l, i) => {
     glowText(ctx, l, W / 2, 850 + i * 52, 19, 'rgba(232,246,255,0.75)', 5);
   });
 
-  const bw2 = 560, bh2 = 104;
-  drawBigBtn(ctx, W / 2 - bw2 / 2, 1075, bw2, bh2, 'COPY INVITE LINK', '#19e6ff', t, true, 22);
-  UI.buttons.push({ x: W / 2 - bw2 / 2, y: 1075, w: bw2, h: bh2, action: ACTIONS.copyLink });
+  const bw2 = 620, bh2 = 104;
+  drawBigBtn(ctx, W / 2 - bw2 / 2, 1075, bw2, bh2, 'SHARE INVITE LINK', '#52ff9d', t, false, 24);
+  UI.buttons.push({ x: W / 2 - bw2 / 2, y: 1075, w: bw2, h: bh2, action: ACTIONS.shareLink });
   if (NET.S.copyMsg) glowText(ctx, NET.S.copyMsg, W / 2, 1230, 17, '#ffd23f', 6);
 
   glowText(ctx, 'ARENA: ' + BOARDS[boardIdx].name, W / 2, 1340, 20, '#aebcff', 6);
@@ -1311,4 +1311,31 @@ function drawJoin(ctx, code, t) {
   scanlines(ctx);
 }
 
-Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawDragTrail, drawSplitUI, drawTitle, drawPicker, drawLobby, drawJoin, drawOverlayMsg });
+// the guest's landing when they open an invite link — a friendly "you're in"
+// screen that auto-connects, then onGuestStart drops them into the match
+function drawInvite(ctx, code, t) {
+  ctx.fillStyle = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+  drawStars(ctx, t);
+  titleBattle(ctx, t);
+
+  glowText(ctx, "YOU'RE INVITED!", W / 2, 420, 50, '#ff3df0', 22);
+  glowText(ctx, 'TO A CORTEX CLASH DUEL', W / 2, 505, 22, 'rgba(232,246,255,0.7)', 6);
+
+  glowText(ctx, 'ROOM', W / 2, 650, 22, '#ffd23f', 8);
+  const bw = 150, gap = 26;
+  drawCodeBoxes(ctx, code, W / 2 - (4 * bw + 3 * gap) / 2, 700, bw, 180, gap, '#ff3df0', t, false);
+
+  const st = (NET.S.mode === 'guest' && NET.S.status) || 'CONNECTING';
+  const busy = st.indexOf('CONNECT') === 0;
+  const dots = busy ? '.'.repeat(1 + (Math.floor(t * 2) % 3)) : '';
+  glowText(ctx, st + dots, W / 2, 985, 22, busy ? '#52ff9d' : '#ff5566', 8);
+  glowText(ctx, busy ? 'YOU ARE PLAYER 2 — DROPPING IN…' : 'TAP CANCEL AND TRY THE LINK AGAIN', W / 2, 1075, 18, 'rgba(232,246,255,0.6)', 5);
+
+  drawBigBtn(ctx, W / 2 - 240, 1500, 480, 104, 'CANCEL', '#ff5566', t, true, 22);
+  UI.buttons.push({ x: W / 2 - 240, y: 1500, w: 480, h: 104, action: ACTIONS.cancelOnline });
+
+  scanlines(ctx);
+}
+
+Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawDragTrail, drawSplitUI, drawTitle, drawPicker, drawLobby, drawJoin, drawInvite, drawOverlayMsg });

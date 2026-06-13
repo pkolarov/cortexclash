@@ -88,6 +88,7 @@
     joinOnline: () => { SFX.cursor(); screen = 'join'; },
     cancelOnline: () => { SFX.cursor(); backToTitle(); },
     copyLink: () => { SFX.cursor(); NET.copyLink(); },
+    shareLink: () => { SFX.cursor(); NET.shareLink(); },
     key: (ch) => { if (joinCode.length < 4) { joinCode += ch; SFX.cursor(); } else SFX.deny(); },
     del: () => { joinCode = joinCode.slice(0, -1); SFX.cursor(); },
     joinGo: () => { if (joinCode.length === 4) { SFX.select(); NET.join(joinCode); } else SFX.deny(); },
@@ -448,6 +449,8 @@
       drawPicker(ctx, picker, t);
     } else if (screen === 'lobby') {
       drawLobby(ctx, boardIdx, t);
+    } else if (screen === 'invite') {
+      drawInvite(ctx, joinCode, t);
     } else if (screen === 'join') {
       drawJoin(ctx, joinCode, t);
     } else {
@@ -455,12 +458,13 @@
     }
   }
 
-  // auto-join when opened via an invite link (#room=XXXX)
+  // opened via an invite link (#room=XXXX): show the invite landing and
+  // auto-connect, then onGuestStart drops them straight into the match
   const roomMatch = (location.search + ' ' + location.hash).match(/room=([A-Za-z]{4})/);
   if (roomMatch) {
     joinCode = roomMatch[1].toUpperCase();
-    screen = 'join';
-    setTimeout(() => { if (typeof Peer !== 'undefined' && screen === 'join') NET.join(joinCode); }, 400);
+    screen = 'invite';
+    setTimeout(() => { if (typeof Peer !== 'undefined' && screen === 'invite') NET.join(joinCode); }, 400);
   }
 
   if (document.fonts && document.fonts.load) {

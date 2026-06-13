@@ -228,8 +228,21 @@ const NET = (() => {
     }
   }
 
+  // Native share sheet (phones) with a clipboard-copy fallback on desktop.
+  function shareLink() {
+    const l = inviteLink();
+    if (!l) { S.copyMsg = 'NO LINK YET'; return; }
+    if (navigator.share) {
+      navigator.share({ title: 'Cortex Clash', text: '⚔ I challenge you to a Cortex Clash duel! Tap to join:', url: l })
+        .then(() => { S.copyMsg = 'INVITE SHARED!'; })
+        .catch((e) => { if (e && e.name === 'AbortError') return; copyLink(); }); // cancelled → ignore; else copy
+    } else {
+      copyLink();
+    }
+  }
+
   function bind(handlers) { H = handlers || {}; }
 
-  return { S, ALPHA, active, myPlayer, hostRoom, join, leave, bind, send, sendStart, hostTick, guestSmooth, unpackInto, copyLink };
+  return { S, ALPHA, active, myPlayer, hostRoom, join, leave, bind, send, sendStart, hostTick, guestSmooth, unpackInto, copyLink, shareLink };
 })();
 window.NET = NET;
