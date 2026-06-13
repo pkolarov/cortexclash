@@ -4,9 +4,9 @@
 'use strict';
 window.AI = (() => {
   const DIFFS = {
-    easy: { interval: 3.2, noise: 40, splitChance: 0.0, skip: 0.3 },
-    normal: { interval: 2.1, noise: 16, splitChance: 0.12, skip: 0.1 },
-    hard: { interval: 1.3, noise: 5, splitChance: 0.3, skip: 0 },
+    easy: { interval: 3.2, noise: 40, splitChance: 0.05, skip: 0.3 },
+    normal: { interval: 2.1, noise: 16, splitChance: 0.25, skip: 0.1 },
+    hard: { interval: 1.3, noise: 5, splitChance: 0.45, skip: 0 },
   };
 
   // every selectable opponent. `name` is the in-game HUD label (keep short).
@@ -160,6 +160,28 @@ window.AI = (() => {
     return s;
   }
 
+  // Strategic split: peel a fast, low-value fragment off a big (value>=4)
+  // piece and send it somewhere genuinely useful — rush the enemy castle, grab
+  // a powerup, or make a favorable attack — while the parent keeps fighting.
+  // Uses the same scoreMove the bot uses for normal moves, so the fragment goes
+  // where it does the most damage. Returns true if it split.
+  function botSplit(g, own, threats) {
+    if (g.pieces.filter((p) => p.owner === own).length >= 10) return false; // don't shred the army
+    let best = null, bestScore = 35; // only split when the fragment move is clearly worth it
+    for (const p of g.pieces) {
+      if (p.owner !== own || p.path || p.value < 4) continue;
+      for (const k of [1, 2]) {            // fast, long-range fragments make the best rushers
+        if (k >= p.value) continue;
+        const ghost = Object.assign({}, p, { value: k });
+        for (const m of legalMoves(g, ghost)) {
+          const s = scoreMove(g, own, ghost, m, threats);
+          if (s > bestScore) { bestScore = s; best = { id: p.id, k, c: m.c, r: m.r }; }
+        }
+      }
+    }
+    return best ? splitMove(g, own, best.id, best.k, best.c, best.r) : false;
+  }
+
   function botAct(g, ctl) {
     const own = ctl.own;
     const d = DIFFS[ctl.spec.diff];
@@ -167,16 +189,7 @@ window.AI = (() => {
     const threats = findThreats(g, own);
     const mine = g.pieces.filter((p) => p.owner === own && !p.path);
     if (!mine.length) return;
-    if (Math.random() < d.splitChance && g.pieces.filter((p) => p.owner === own).length <= 3) {
-      const big = mine.find((p) => p.value >= 4);
-      if (big) {
-        const prev = g.sel[own];
-        g.sel[own] = big.id;
-        trySplit(g, own);
-        g.sel[own] = prev === big.id ? null : prev;
-        return;
-      }
-    }
+    if (Math.random() < d.splitChance && botSplit(g, own, threats)) return;
     let best = null, bestScore = -Infinity;
     const mk = g.castles[own];
     for (const p of mine) {
