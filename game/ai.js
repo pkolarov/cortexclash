@@ -3,14 +3,15 @@
 // AI owns side 1 (top), in watch mode controllers drive both sides.
 'use strict';
 window.AI = (() => {
-  // hunt  = how hard the bot chases enemy pieces it can profitably kill (0 = ignores them, just rushes the castle)
-  // safety = how much it avoids parking a piece where the enemy can kill it for free next turn
+  // hunt    = how hard the bot chases enemy pieces it can profitably kill (0 = ignores them, just rushes the castle)
+  // safety  = how much it avoids parking a piece where the enemy can kill it for free next turn
+  // combine = how readily it merges pieces into a heavier spearhead to crack a turtled defence
   const DIFFS = {
-    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18, moves: 1, hunt: 0, safety: 0 },
-    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1, hunt: 0.35, safety: 0.25 },
-    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1, hunt: 0.8, safety: 0.6 },
-    veryhard: { interval: 0.65, noise: 0, splitChance: 0.6, skip: 0, moves: 1, hunt: 1.1, safety: 0.9 },
-    inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2, hunt: 1.4, safety: 1 }, // flawless + two moves a turn
+    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18, moves: 1, hunt: 0, safety: 0, combine: 0 },
+    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1, hunt: 0.35, safety: 0.25, combine: 0.2 },
+    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1, hunt: 1.1, safety: 0.6, combine: 0.5 },
+    veryhard: { interval: 0.6, noise: 0, splitChance: 0.6, skip: 0, moves: 1, hunt: 1.4, safety: 0.85, combine: 0.95 },
+    inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2, hunt: 1.6, safety: 1, combine: 1.2 }, // flawless + two moves a turn
   };
 
   // every selectable opponent. `name` is the in-game HUD label (keep short).
@@ -203,7 +204,19 @@ window.AI = (() => {
       if (u && u.type === 'heart' && mk.energy < mk.max * 0.6) s += 30;
       if (u && u.type === 'charge' && p.value <= 4) s += 10;
     } else if (m.kind === 'combine') {
-      return 6;
+      const mate = stationaryAt(g, m.c, m.r);
+      if (!mate) return 6;
+      const result = Math.min(MAXV, p.value + mate.value);   // legalMoves only offers non-wasteful merges (sum <= 6)
+      let enemyMax = 0;
+      for (const q of g.pieces) if (q.owner !== own && !q.path && q.value > enemyMax) enemyMax = q.value;
+      // a mild nudge to consolidate — deliberately too small to merge for its own
+      // sake every turn (which would just thrash against splitting)
+      let s = 4 + result * sk.combine * 2;
+      // the real payoff: forge a spearhead that can newly out-muscle (clean-kill)
+      // the enemy's strongest guard when neither half could alone — the key to
+      // cracking a turtled castle.
+      if (enemyMax >= 4 && result >= enemyMax && p.value < enemyMax && mate.value < enemyMax) s += 55 * sk.combine;
+      return s;
     } else {
       // plain move: advance toward the enemy castle, fast pieces lead the push
       s = (dist(p.col, p.row, ek.col, ek.row) - dist(m.c, m.r, ek.col, ek.row)) * (7 - p.value) * 2.2;
@@ -239,8 +252,10 @@ window.AI = (() => {
     if (g.pieces.filter((p) => p.owner === own).length >= 10) return false; // don't shred the army
     let best = null, bestScore = 35; // only split when the fragment move is clearly worth it
     for (const p of g.pieces) {
-      if (p.owner !== own || p.path || p.value < 4) continue;
-      for (const k of [1, 2]) {            // fast, long-range fragments make the best rushers
+      if (p.owner !== own || p.path || p.value < 3) continue;
+      // a value-1/2 fragment is a fast scout/rusher; a value-3 fragment is a real
+      // attacker that can clean-kill mid pieces while the parent keeps fighting
+      for (const k of [1, 2, 3]) {
         if (k >= p.value) continue;
         const ghost = Object.assign({}, p, { value: k });
         for (const m of legalMoves(g, ghost)) {
