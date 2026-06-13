@@ -4,9 +4,9 @@
 'use strict';
 window.AI = (() => {
   const DIFFS = {
-    easy: { interval: 3.2, noise: 40, splitChance: 0.05, skip: 0.3 },
-    normal: { interval: 2.1, noise: 16, splitChance: 0.25, skip: 0.1 },
-    hard: { interval: 1.3, noise: 5, splitChance: 0.45, skip: 0 },
+    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18 },
+    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03 },
+    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0 },
   };
 
   // every selectable opponent. `name` is the in-game HUD label (keep short).
