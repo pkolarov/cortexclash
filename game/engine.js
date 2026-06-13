@@ -164,8 +164,10 @@ function addFx(g, type, c, r, owner, m) { g.fx.push({ type, c, r, owner, t: 0, m
 
 function combat(g, atk, def) {
   const av = atk.value, dv = def.value;
-  // heavier clashes shake harder
-  g.shake = Math.max(g.shake, Math.min(1.8, 0.5 + (av + dv) * 0.11));
+  // only heavyweight clashes rattle the screen — a 5 or 6 has to be involved;
+  // skirmishes between small numbers stay calm
+  const big = Math.max(av, dv);
+  if (big >= 5) g.shake = Math.max(g.shake, big >= 6 ? 1.6 : 0.95);
   if (def.shield) {
     def.shield = false;
     addFx(g, 'shield', def.col, def.row, def.owner, dv);
