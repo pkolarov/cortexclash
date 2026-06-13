@@ -15,6 +15,11 @@
 
   window.UI = { buttons: [] };
 
+  // Android edge-swipe / back gesture fires popstate, which would otherwise
+  // quit the game. Push a guard entry so a stray back is captured by popstate
+  // (below) and turned into a pause instead of an exit.
+  function pushGameGuard() { try { history.pushState({ cc: 'game' }, ''); } catch (e) {} }
+
   function startGame() {
     g = makeGame(boardIdx);
     paused = false;
@@ -22,6 +27,7 @@
     setSplit(null);
     drags.clear();
     screen = 'game';
+    pushGameGuard();
   }
 
   function backToTitle() {
@@ -141,6 +147,7 @@
       drags.clear();
       lastTap = { t: 0, c: -1, r: -1 };
       screen = 'game';
+      pushGameGuard();
       SFX.select();
     },
     onState: (m) => {
@@ -186,6 +193,15 @@
   }
   window.addEventListener('resize', fit);
   fit();
+
+  // a back/forward gesture during a live match pauses instead of quitting —
+  // we re-push the guard so the page never actually navigates away
+  window.addEventListener('popstate', () => {
+    if (screen === 'game' && g && !g.over && !netLost) {
+      pushGameGuard();
+      if (!paused) ACTIONS.pause();
+    }
+  });
 
   // which players this device may control right now (local 2P: both)
   function controllablePls() {

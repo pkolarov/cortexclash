@@ -68,6 +68,8 @@ const SFX = (() => {
     spawn:   () => { ensure(); tone(880, 0.07, 'sine', 0.3, 1320); },
     drain:   () => { ensure(); tone(196, 0.06, 'square', 0.18, 160); },
     alarm:   () => { ensure(); tone(880, 0.1, 'square', 0.4, 440); tone(880, 0.1, 'square', 0.4, 440, 0.16); },
+    // castle under attack: a louder, more urgent rising klaxon. urgent=1 adds a top siren.
+    underAttack: (urgent) => { ensure(); tone(420, 0.14, 'sawtooth', 0.62, 700); tone(620, 0.14, 'sawtooth', 0.62, 920, 0.11); if (urgent) { tone(960, 0.12, 'square', 0.55, 480, 0.22); noise(0.05, 0.2, 0.22); } },
     fanfare: () => { ensure(); [392, 523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.16, 'square', 0.5, null, i * 0.11)); },
   };
 })();

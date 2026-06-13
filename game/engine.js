@@ -22,8 +22,8 @@ function makeGame(boardIdx) {
   });
   const maxE = Math.round(window.TWEAKS.castleEnergy);
   const castles = [
-    { owner: 0, col: 4, row: 11, energy: maxE, max: maxE, lastDrainT: -9 },
-    { owner: 1, col: 4, row: 1, energy: maxE, max: maxE, lastDrainT: -9 },
+    { owner: 0, col: 4, row: 11, energy: maxE, max: maxE, lastDrainT: -9, attackT: -9 },
+    { owner: 1, col: 4, row: 1, energy: maxE, max: maxE, lastDrainT: -9, attackT: -9 },
   ];
   const pieces = [];
   let pid = 1;
@@ -275,15 +275,25 @@ function updateGame(g, dt) {
   // castle drain — ANY parked piece drains the castle (even the owner's, so
   // defending in person costs energy until the piece moves off), at 70% rate
   for (const k of g.castles) {
-    let drain = 0;
+    let drain = 0, enemyDrain = false;
     for (const p of g.pieces) {
-      if (!p.path && p.col === k.col && p.row === k.row) drain += p.value;
+      if (!p.path && p.col === k.col && p.row === k.row) {
+        drain += p.value;
+        if (p.owner !== k.owner) enemyDrain = true; // an enemy is camping = under attack
+      }
     }
     if (drain > 0) {
       k.energy -= drain * dt * 0.7;
       k.lastDrainT = g.time;
       if (g.time % 0.5 < dt) SFX.drain();
-      if (k.energy < k.max * 0.3 && g.time % 1.2 < dt) SFX.alarm();
+      if (enemyDrain) {
+        k.attackT = g.time; // drives the arena warning flash in the renderer
+        // urgent klaxon — faster + escalated once the castle is critically low
+        const critical = k.energy < k.max * 0.3;
+        if (g.time % (critical ? 0.7 : 1.0) < dt) SFX.underAttack(critical ? 1 : 0);
+      } else if (k.energy < k.max * 0.3 && g.time % 1.2 < dt) {
+        SFX.alarm();
+      }
       if (k.energy <= 0) { k.energy = 0; endGame(g, 1 - k.owner); return; }
     }
   }

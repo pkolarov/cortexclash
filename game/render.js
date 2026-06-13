@@ -31,6 +31,13 @@ function textFlip(owner) {
   if (window.AI && AI.active()) return false;
   return owner === 1;
 }
+// which castle(s) the person watching this screen is defending — used to warn
+// them when theirs is under attack
+function myOwners() {
+  if (window.NET && NET.active()) return [NET.myPlayer()];
+  if (window.AI && AI.active() && !AI.S.watch) return [0];
+  return [0, 1];
+}
 
 function rr(ctx, x, y, w, h, rad) {
   ctx.beginPath();
@@ -637,6 +644,40 @@ function drawIconBtn(ctx, x, y, s, kind, on) {
   ctx.restore();
 }
 
+// pulsing red arena warning when the viewer's own castle is being drained by
+// an enemy. Drawn in screen space (over the board), so it reads the same on a
+// guest's flipped view.
+function drawAttackWarning(ctx, g, t) {
+  let who = -1;
+  for (const o of myOwners()) {
+    if (g.time - g.castles[o].attackT < 0.4) { who = o; break; }
+  }
+  if (who < 0) return;
+  const pulse = 0.4 + 0.45 * Math.abs(Math.sin(t * 7));
+  const x0 = BX - 6, y0 = BY - 6, w = COLS * CELL + 12, h = ROWS * CELL + 12;
+  ctx.save();
+  ctx.globalAlpha = pulse * 0.13;
+  ctx.fillStyle = '#ff2d3d';
+  rr(ctx, x0, y0, w, h, 18);
+  ctx.fill();
+  ctx.globalAlpha = pulse;
+  ctx.strokeStyle = '#ff2d3d';
+  ctx.lineWidth = 14;
+  ctx.shadowColor = '#ff2d3d';
+  ctx.shadowBlur = 28 * window.TWEAKS.glow;
+  rr(ctx, x0, y0, w, h, 18);
+  ctx.stroke();
+  ctx.restore();
+  // banner near the threatened castle, oriented to its owner
+  const banY = who === 1 ? BY + 64 : BY + ROWS * CELL - 64;
+  ctx.save();
+  ctx.globalAlpha = 0.6 + 0.4 * Math.abs(Math.sin(t * 7));
+  ctx.translate(W / 2, banY);
+  if (textFlip(who)) ctx.rotate(Math.PI);
+  glowText(ctx, 'CASTLE UNDER ATTACK!', 0, 0, 22, '#ff5566', 12);
+  ctx.restore();
+}
+
 // ---------- screens ----------
 function drawGame(ctx, g, paused, t) {
   ctx.save();
@@ -689,6 +730,8 @@ function drawGame(ctx, g, paused, t) {
     ctx.fillRect(0, 0, W, H);
     ctx.restore();
   }
+
+  if (!g.over && !paused) drawAttackWarning(ctx, g, t);
 
   if (paused && !g.over) drawOverlayMsg(ctx, 'PAUSED', '#aebcff', 'TAP ▶ TO RESUME');
 

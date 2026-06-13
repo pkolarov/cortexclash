@@ -32,7 +32,7 @@ const NET = (() => {
   }
 
   // While hosting, every engine sound is also queued and echoed to the guest.
-  const SOUND_NAMES = ['cursor', 'select', 'deny', 'launch', 'combine', 'split', 'hit', 'boom', 'shieldBlock', 'power', 'spawn', 'drain', 'alarm', 'fanfare'];
+  const SOUND_NAMES = ['cursor', 'select', 'deny', 'launch', 'combine', 'split', 'hit', 'boom', 'shieldBlock', 'power', 'spawn', 'drain', 'alarm', 'underAttack', 'fanfare'];
   function wrapSounds() {
     if (sfxOrig) return;
     sfxOrig = {};
@@ -202,7 +202,7 @@ const NET = (() => {
   function pack(g) {
     return {
       p: g.pieces.map((p) => [p.id, p.owner, p.value, p.col, p.row, p.path ? p.path.dest : 0, p.path ? p.path.cells : 0, p.prog, p.from, p.shield ? 1 : 0, p.boostUntil, p.charged ? 1 : 0]),
-      c: g.castles.map((k) => [k.energy, k.lastDrainT, k.max]),
+      c: g.castles.map((k) => [k.energy, k.lastDrainT, k.max, k.attackT]),
       u: g.powerups.map((u) => [u.type, u.col, u.row, u.born]),
       f: g.fx.map((f) => [f.type, f.c, f.r, f.owner, f.t, f.m || 0]),
       sel: g.sel, time: g.time, w: g.winner, o: g.over ? 1 : 0, ot: g.overT, sh: g.shake, fl: g.flash || 0,
@@ -215,7 +215,7 @@ const NET = (() => {
       path: a[5] ? { dest: a[5], cells: a[6] } : null,
       prog: a[7], from: a[8], shield: !!a[9], boostUntil: a[10], charged: !!a[11],
     }));
-    s.c.forEach((ca, i) => { const k = g.castles[i]; k.energy = ca[0]; k.lastDrainT = ca[1]; k.max = ca[2]; });
+    s.c.forEach((ca, i) => { const k = g.castles[i]; k.energy = ca[0]; k.lastDrainT = ca[1]; k.max = ca[2]; k.attackT = ca[3] != null ? ca[3] : -9; });
     g.powerups = s.u.map((a) => ({ type: a[0], col: a[1], row: a[2], born: a[3] }));
     g.fx = s.f.map((a) => ({ type: a[0], c: a[1], r: a[2], owner: a[3], t: a[4], m: a[5] || 0 }));
     g.sel = s.sel; g.time = s.time; g.winner = s.w; g.over = !!s.o; g.overT = s.ot; g.shake = s.sh; g.flash = s.fl || 0;
