@@ -8,6 +8,15 @@ const PLAYER_COLORS = ['#19e6ff', '#ff3df0'];
 const PLAYER_DARK = ['#073039', '#380934'];
 const PLAYER_NAMES = ['PLAYER 1', 'PLAYER 2'];
 const FONT = '"Press Start 2P", monospace';
+// running build number — read from this script's own ?v=NN so it always matches
+// the deployed cache version (no separate constant to keep in sync)
+const APP_VER = (() => {
+  try {
+    const s = document.currentScript && document.currentScript.src;
+    const m = s && s.match(/[?&]v=(\d+)/);
+    return m ? m[1] : '?';
+  } catch (e) { return '?'; }
+})();
 
 function px(c) { return BX + c * CELL; }
 function py(r) { return BY + r * CELL; }
@@ -1163,7 +1172,7 @@ function drawTitle(ctx, boardIdx, t) {
   ctx.font = '14px ' + FONT;
   ctx.fillStyle = 'rgba(232,246,255,0.45)';
   ctx.textAlign = 'center';
-  ctx.fillText('LLM MODES NEED YOUR OWN API KEY', W / 2, y + 96 + 24);
+  ctx.fillText('By PKZIPYA     Version #: ' + APP_VER, W / 2, y + 96 + 24);
 
   scanlines(ctx);
 }
