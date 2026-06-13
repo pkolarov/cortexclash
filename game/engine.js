@@ -367,6 +367,45 @@ function selectAt(g, c, r, ownerFilter) {
   return sp.owner;
 }
 
+// Where a drag toward (tc,tr) actually lands. Pieces only travel along the 8
+// straight/diagonal directions, so the drag vector is snapped to the nearest
+// of them, then the landing is the furthest LEGAL cell along that direction up
+// to the dragged distance — i.e. drag past your reach and you still go as far
+// as allowed. Returns { sdx, sdy, landC, landR, overreach } or null.
+//   landC/landR null  → can't move that way at all (whole tether is "no-go")
+//   overreach true     → the finger is beyond the landing (draw that part red)
+function dragLanding(g, p, tc, tr) {
+  if (!p || p.path) return null;
+  const dx = tc - p.col, dy = tr - p.row;
+  if (dx === 0 && dy === 0) return null;
+  let oct = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
+  oct = ((oct % 8) + 8) % 8;
+  const sdx = [1, 1, 0, -1, -1, -1, 0, 1][oct];
+  const sdy = [0, 1, 1, 1, 0, -1, -1, -1][oct];
+  const intended = Math.max(Math.abs(dx), Math.abs(dy));
+  // legal landing steps along this ray (reserved cells leave gaps, so collect
+  // them rather than assuming a contiguous run)
+  const steps = [];
+  for (const m of legalMoves(g, p)) {
+    const cc = m.c - p.col, rr = m.r - p.row;
+    let step;
+    if (sdx === 0) { if (cc !== 0) continue; step = rr * sdy; }
+    else if (sdy === 0) { if (rr !== 0) continue; step = cc * sdx; }
+    else { if (cc * sdy !== rr * sdx) continue; step = cc * sdx; }
+    if (step > 0) steps.push(step);
+  }
+  if (!steps.length) return { sdx, sdy, landC: null, landR: null, overreach: true };
+  steps.sort((a, b) => a - b);
+  let landStep = steps[0];
+  for (const s of steps) if (s <= intended) landStep = s;
+  return {
+    sdx, sdy,
+    landC: p.col + sdx * landStep,
+    landR: p.row + sdy * landStep,
+    overreach: intended > landStep,
+  };
+}
+
 // Drag-place: command one specific piece (by id) to (c,r). Uses the dragged
 // piece directly instead of tapCell's closest-claim, so a drag never moves the
 // wrong side's piece. Returns true if the move was legal and issued.
@@ -407,6 +446,6 @@ function splitMove(g, pl, pieceId, k, c, r) {
 }
 
 Object.assign(window, {
-  COLS, ROWS, MAXV, makeGame, updateGame, tapCell, trySplit, splitMove, selectAt, commandPieceTo, speedOf,
+  COLS, ROWS, MAXV, makeGame, updateGame, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
   legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt,
 });

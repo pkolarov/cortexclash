@@ -363,10 +363,16 @@
       }
       return;
     }
-    // dragged to another cell: place the dragged piece there
+    // dragged to another cell: place the dragged piece. A drag is forgiving —
+    // dragging past the piece's reach still sends it as far as allowed along
+    // that direction (the clamped landing cell).
     lastTap.t = 0;
-    if (drag.pieceId != null) dispatchPlace(drag.pl, drag.pieceId, c, r);
-    else dispatchTap(c, r);
+    if (drag.pieceId != null) {
+      const p = pieceById(g, drag.pieceId);
+      const land = p && dragLanding(g, p, c, r);
+      if (land && land.landC != null) dispatchPlace(drag.pl, drag.pieceId, land.landC, land.landR);
+      else SFX.deny();
+    } else dispatchTap(c, r);
   });
   // track the finger while dragging so the renderer can draw a trail
   canvas.addEventListener('pointermove', (e) => {
@@ -385,8 +391,19 @@
     const out = [];
     for (const d of drags.values()) {
       if (!d.moved) continue;
-      if (d.fromChip) out.push({ kind: 'chip', pl: d.pl, ox: d.ox, oy: d.oy, lx: d.lx, ly: d.ly, k: splitUI ? splitUI.k : 0 });
-      else if (d.pieceId != null) out.push({ kind: 'piece', pl: d.pl, fromC: d.c, fromR: d.r, lx: d.lx, ly: d.ly, pieceId: d.pieceId });
+      if (d.fromChip) {
+        out.push({ kind: 'chip', pl: d.pl, ox: d.ox, oy: d.oy, lx: d.lx, ly: d.ly, k: splitUI ? splitUI.k : 0 });
+      } else if (d.pieceId != null && g) {
+        const p = pieceById(g, d.pieceId);
+        if (!p) continue;
+        const [fc, fr] = cellOf(d.lx, d.ly);
+        const land = dragLanding(g, p, fc, fr); // where it would actually land
+        out.push({
+          kind: 'piece', pl: d.pl, fromC: d.c, fromR: d.r, lx: d.lx, ly: d.ly, pieceId: d.pieceId,
+          landC: land ? land.landC : null, landR: land ? land.landR : null,
+          overreach: land ? land.overreach : true,
+        });
+      }
     }
     window.DRAGVIS = out;
   }

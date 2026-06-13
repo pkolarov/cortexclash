@@ -618,13 +618,40 @@ function drawDragTrail(ctx, g, t) {
       size = 64; rad = 32;
     }
 
-    // glowing dashed tether from home → finger
-    ctx.save();
-    ctx.strokeStyle = col; ctx.globalAlpha = 0.7; ctx.lineWidth = 5;
-    ctx.setLineDash([14, 12]); ctx.lineDashOffset = -t * 70;
-    ctx.shadowColor = col; ctx.shadowBlur = 12 * window.TWEAKS.glow;
-    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(d.lx, d.ly); ctx.stroke();
-    ctx.restore();
+    const RED = '#ff4d5e';
+    const seg = (x1, y1, x2, y2, c) => {
+      ctx.save();
+      ctx.strokeStyle = c; ctx.globalAlpha = 0.75; ctx.lineWidth = 5;
+      ctx.setLineDash([14, 12]); ctx.lineDashOffset = -t * 70;
+      ctx.shadowColor = c; ctx.shadowBlur = 12 * window.TWEAKS.glow;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.restore();
+    };
+
+    if (d.kind === 'piece' && d.landC != null) {
+      // reachable part in the piece's colour, overreach beyond it in red,
+      // and a bright pulsing marker on the cell it will actually land on
+      const lx = px(d.landC) + CELL / 2, ly = py(d.landR) + CELL / 2;
+      seg(ox, oy, lx, ly, col);
+      if (d.overreach) seg(lx, ly, d.lx, d.ly, RED);
+      const pulse = 0.45 + 0.25 * Math.sin(t * 7);
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = col;
+      rr(ctx, px(d.landC) + 8, py(d.landR) + 8, CELL - 16, CELL - 16, 12);
+      ctx.fill();
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
+      ctx.shadowColor = col; ctx.shadowBlur = 16 * window.TWEAKS.glow;
+      rr(ctx, px(d.landC) + 8, py(d.landR) + 8, CELL - 16, CELL - 16, 12);
+      ctx.stroke();
+      ctx.restore();
+    } else if (d.kind === 'piece') {
+      // no legal move in this direction at all — whole tether is a no-go
+      seg(ox, oy, d.lx, d.ly, RED);
+    } else {
+      seg(ox, oy, d.lx, d.ly, col); // chip drag
+    }
 
     // ghost token riding the finger
     ctx.save();
