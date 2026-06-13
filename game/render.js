@@ -12,6 +12,17 @@ const FONT = '"Press Start 2P", monospace';
 function px(c) { return BX + c * CELL; }
 function py(r) { return BY + r * CELL; }
 
+// Player-1's numbers/text are mirrored ONLY in local face-to-face 2P (two
+// humans sharing one screen). In single-player, AI-vs-AI watch, and online
+// there's a single reader per screen, so everything stays upright (online
+// readability is handled by the whole-board view flip instead).
+function isLocal2P() { return !(window.NET && NET.active()) && !(window.AI && AI.active()); }
+function textFlip(owner) {
+  if (window.NET && NET.active()) return NET.S.view === 1;
+  if (window.AI && AI.active()) return false;
+  return owner === 1;
+}
+
 function rr(ctx, x, y, w, h, rad) {
   ctx.beginPath();
   ctx.moveTo(x + rad, y);
@@ -167,7 +178,7 @@ function drawCastle(ctx, g, k, t) {
   ctx.restore();
 
   ctx.save();
-  const flipNum = (window.NET && NET.active()) ? NET.S.view === 1 : k.owner === 1;
+  const flipNum = textFlip(k.owner);
   if (flipNum) { ctx.translate(cx, cy + 8); ctx.rotate(Math.PI); ctx.translate(-cx, -(cy + 8)); }
   glowText(ctx, String(Math.ceil(k.energy)), cx, cy + 8, 26, draining ? '#ff5566' : '#ffffff', 8);
   ctx.restore();
@@ -281,10 +292,8 @@ function drawToken(ctx, g, p, t) {
 
   ctx.save();
   ctx.translate(cx, cy);
-  // local face-to-face: flip P2's tokens. Online: each device reads upright
-  // (guest's whole view is already rotated, so re-flip every token there).
-  const net = window.NET && NET.active();
-  const flipTok = net ? NET.S.view === 1 : p.owner === 1;
+  // mirror P2's tokens only in local face-to-face 2P (see textFlip)
+  const flipTok = textFlip(p.owner);
   if (flipTok) ctx.rotate(Math.PI);
   const bob = p.path ? 0 : Math.sin(t * 2.2 + p.id) * 2;
   ctx.translate(0, bob);
@@ -477,7 +486,7 @@ function drawFx(ctx, g, t) {
     } else if (f.type === 'dmg') {
       // bold pixel damage number: hard block shadow + red/white flicker, steppy rise
       const rise = (Math.floor(sp * 6) / 6) * 84;
-      const flip = (window.NET && NET.active()) ? NET.S.view === 1 : f.owner === 1;
+      const flip = textFlip(f.owner);
       ctx.shadowBlur = 0;
       ctx.translate(fxq(cx), fxq(cy - 24 - rise));
       if (flip) ctx.rotate(Math.PI);
@@ -489,7 +498,7 @@ function drawFx(ctx, g, t) {
       ctx.fillStyle = step % 2 ? '#ffffff' : '#ff3b3b';
       ctx.fillText('-' + m, 0, 0);
     } else if (f.type === 'merge') {
-      const flip = (window.NET && NET.active()) ? NET.S.view === 1 : f.owner === 1;
+      const flip = textFlip(f.owner);
       const rise = (Math.floor(sp * 6) / 6) * 46;
       ctx.shadowBlur = 0;
       ctx.translate(fxq(cx), fxq(cy - 18 - rise));
@@ -633,11 +642,16 @@ function drawGame(ctx, g, paused, t) {
   drawHud(ctx, g, 0, t, false);
   ctx.restore();
 
-  // top HUD (player 1) — rotated 180 so it reads from their side
+  // top HUD (player 1) — rotated 180 only in local 2P (and online, where the
+  // board flip needs countering); upright for the lone reader in vs-AI / watch
   ctx.save();
-  ctx.translate(W, HUD_H);
-  ctx.rotate(Math.PI);
-  drawHud(ctx, g, 1, t, true);
+  if (isLocal2P() || (window.NET && NET.active())) {
+    ctx.translate(W, HUD_H);
+    ctx.rotate(Math.PI);
+    drawHud(ctx, g, 1, t, true);
+  } else {
+    drawHud(ctx, g, 1, t, false);
+  }
   ctx.restore();
 
   ctx.restore();
@@ -686,7 +700,7 @@ function drawDragTrail(ctx, g, t) {
       ox = px(d.fromC) + CELL / 2; oy = py(d.fromR) + CELL / 2;
       col = PLAYER_COLORS[d.pl];
       label = String(p.value);
-      flipTok = (window.NET && NET.active()) ? NET.S.view === 1 : d.pl === 1;
+      flipTok = textFlip(d.pl);
       size = 64 + p.value * 4; rad = Math.max(8, 30 - p.value * 3.5);
       // faint outline of the home cell it lifts from
       ctx.save();
@@ -699,7 +713,7 @@ function drawDragTrail(ctx, g, t) {
       ox = d.ox; oy = d.oy;
       col = '#ffd23f';
       label = d.k ? String(d.k) : '';
-      flipTok = (window.NET && NET.active()) ? NET.S.view === 1 : d.pl === 1;
+      flipTok = textFlip(d.pl);
       size = 64; rad = 32;
     }
 
@@ -793,7 +807,7 @@ function drawSplitUI(ctx, g, t) {
   // at open), and a negative pop makes the burst-ring radius negative, which
   // throws IndexSizeError in ctx.arc and would freeze the frame loop
   const pop = Math.max(0, Math.min(1, (t - su.t0) * 6));
-  const flipTok = (window.NET && NET.active()) ? NET.S.view === 1 : su.pl === 1;
+  const flipTok = textFlip(su.pl);
 
   // burst ring around the exploding piece
   ctx.save();
