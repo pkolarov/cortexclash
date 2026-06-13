@@ -415,92 +415,98 @@ function drawToken(ctx, g, p, t) {
 }
 
 // ---------- fx ----------
+// 80s-arcade pixel style: chunky square blocks snapped to a grid, a hot
+// flashing palette, and stepped (not smooth) animation.
+const FX_GRID = 8;                                 // everything snaps to this
+const HOT = ['#ffffff', '#ffe24a', '#ff8a1e', '#ff3b3b']; // explosion palette
+const fxq = (v) => Math.round(v / FX_GRID) * FX_GRID;
+function blk(ctx, x, y, s, c) { ctx.fillStyle = c; ctx.fillRect(fxq(x - s / 2), fxq(y - s / 2), Math.round(s), Math.round(s)); }
+
 function drawFx(ctx, g, t) {
+  const FR = 7;                                     // discrete animation frames
   for (const f of g.fx) {
     const cx = px(f.c) + CELL / 2, cy = py(f.r) + CELL / 2;
     const col = f.owner != null ? PLAYER_COLORS[f.owner] : '#ffffff';
-    const k = Math.min(1, f.t / 0.9);    // 0..1 progress
-    const m = f.m || 1;                   // value/magnitude
-    const inv = 1 - k;
+    const k = Math.min(1, f.t / 0.9);
+    const step = Math.min(FR - 1, Math.floor(k * FR));   // 0..FR-1, steppy
+    const sp = step / (FR - 1);                          // stepped phase 0..1
+    const m = f.m || 1;
     ctx.save();
+    ctx.shadowColor = col; ctx.shadowBlur = 6 * window.TWEAKS.glow; // light CRT bloom, hard fills
+
     if (f.type === 'boom') {
-      // value-scaled debris burst + white core flash
-      const n = 8 + Math.min(16, m * 2);
-      const reach = 38 + m * 14;
-      for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2 + f.c * 3 + f.r;
-        const d = 10 + k * reach;
-        ctx.globalAlpha = inv;
-        ctx.fillStyle = i % 2 ? col : '#ffd23f';
-        const s = (9 + m) * inv + 2;
-        ctx.fillRect(cx + Math.cos(a) * d - s / 2, cy + Math.sin(a) * d - s / 2, s, s);
+      // chunky shrapnel flung along arms in big pixel chunks + a flashing core cross
+      const arms = 8 + Math.min(8, m);
+      const reach = 34 + m * 16;
+      for (let i = 0; i < arms; i++) {
+        const a = (i / arms) * Math.PI * 2 + (f.c + f.r);
+        for (let b = 0; b < 3; b++) {
+          const d = sp * reach - b * 18;
+          if (d < 0) continue;
+          const s = (18 + m) - b * 5 - sp * 8;
+          if (s <= 4) continue;
+          blk(ctx, cx + Math.cos(a) * d, cy + Math.sin(a) * d, s, HOT[(i + b + step) % HOT.length]);
+        }
       }
-      ctx.globalAlpha = inv * 0.85;
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(cx, cy, (16 + m * 4) * inv, 0, Math.PI * 2); ctx.fill();
+      if (step < 4) {
+        const cs = (34 + m * 5) * (1 - step / 4);
+        ctx.fillStyle = step % 2 ? '#ffffff' : '#ffe24a';
+        ctx.fillRect(fxq(cx - cs / 2), fxq(cy - cs / 6), Math.round(cs), Math.round(cs / 3));
+        ctx.fillRect(fxq(cx - cs / 6), fxq(cy - cs / 2), Math.round(cs / 3), Math.round(cs));
+      }
     } else if (f.type === 'shock') {
-      // bright expanding shockwave ring, scaled by attacker value
-      for (let r = 0; r < 2; r++) {
-        ctx.globalAlpha = inv * (r ? 0.4 : 0.85);
-        ctx.strokeStyle = r ? '#ffffff' : col;
-        ctx.lineWidth = (7 + m) * inv + 1;
-        ctx.beginPath(); ctx.arc(cx, cy, (18 + m * 9) * k + r * 12, 0, Math.PI * 2); ctx.stroke();
+      // pixelated expanding ring of blocks
+      const rad = 12 + sp * (26 + m * 9);
+      const n = Math.max(8, Math.round((rad * 2 * Math.PI) / 22));
+      const s = 12 - sp * 5;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        blk(ctx, cx + Math.cos(a) * rad, cy + Math.sin(a) * rad, s, (i + step) % 2 ? '#ffffff' : col);
       }
     } else if (f.type === 'clash') {
-      // sharp radial impact spikes + flash where a defender held the line
-      const spikes = 6 + Math.min(8, m);
-      ctx.globalAlpha = inv;
-      ctx.strokeStyle = '#ffd23f';
-      ctx.shadowColor = '#ffd23f'; ctx.shadowBlur = 12 * window.TWEAKS.glow;
-      ctx.lineWidth = 4 * inv + 1;
-      for (let i = 0; i < spikes; i++) {
-        const a = (i / spikes) * Math.PI * 2 + f.r;
-        const r0 = 8, r1 = 16 + m * 6 + k * 34;
-        ctx.beginPath();
-        ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
-        ctx.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
-        ctx.stroke();
+      // chunky impact star — fat pixel rays where a defender held
+      const rays = 8;
+      for (let i = 0; i < rays; i++) {
+        const a = (i / rays) * Math.PI * 2;
+        for (let b = 1; b <= 3; b++) {
+          if (b / 3 > sp + 0.34) continue;
+          const d = 6 + b * (8 + sp * 7);
+          blk(ctx, cx + Math.cos(a) * d, cy + Math.sin(a) * d, 14 - b * 2, (b + step) % 2 ? '#ffe24a' : '#ffffff');
+        }
       }
-      ctx.shadowBlur = 0;
-      ctx.globalAlpha = inv * 0.7;
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(cx, cy, 14 * inv, 0, Math.PI * 2); ctx.fill();
     } else if (f.type === 'dmg') {
-      // floating "-N" damage number, rising and fading, oriented to the victim
-      const rise = k * 78;
-      ctx.globalAlpha = inv;
+      // bold pixel damage number: hard block shadow + red/white flicker, steppy rise
+      const rise = (Math.floor(sp * 6) / 6) * 84;
       const flip = (window.NET && NET.active()) ? NET.S.view === 1 : f.owner === 1;
-      ctx.translate(cx, cy - 26 - rise);
+      ctx.shadowBlur = 0;
+      ctx.translate(fxq(cx), fxq(cy - 24 - rise));
       if (flip) ctx.rotate(Math.PI);
-      ctx.font = Math.round(42 - k * 10) + 'px ' + FONT;
+      ctx.globalAlpha = sp < 0.7 ? 1 : Math.max(0, (1 - sp) / 0.3);
+      ctx.font = '44px ' + FONT;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.lineWidth = 6; ctx.strokeStyle = '#2a060c';
-      ctx.shadowColor = '#ff3344'; ctx.shadowBlur = 14 * window.TWEAKS.glow;
-      ctx.strokeText('-' + m, 0, 0);
-      ctx.fillStyle = '#ff5566';
+      ctx.fillStyle = '#000';                       // hard drop shadow
+      ctx.fillText('-' + m, 5, 6);
+      ctx.fillStyle = step % 2 ? '#ffffff' : '#ff3b3b';
       ctx.fillText('-' + m, 0, 0);
     } else if (f.type === 'merge') {
-      // resulting value pops up briefly on a combine
       const flip = (window.NET && NET.active()) ? NET.S.view === 1 : f.owner === 1;
-      ctx.globalAlpha = inv;
-      ctx.translate(cx, cy - 20 - k * 40);
+      const rise = (Math.floor(sp * 6) / 6) * 46;
+      ctx.shadowBlur = 0;
+      ctx.translate(fxq(cx), fxq(cy - 18 - rise));
       if (flip) ctx.rotate(Math.PI);
-      ctx.font = Math.round(34 - k * 8) + 'px ' + FONT;
+      ctx.globalAlpha = 1 - sp;
+      ctx.font = '40px ' + FONT;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.shadowColor = '#52ff9d'; ctx.shadowBlur = 12 * window.TWEAKS.glow;
-      ctx.fillStyle = '#9dffce';
-      ctx.fillText('+', 0, 0);
+      ctx.fillStyle = '#0b3a23'; ctx.fillText('+', 4, 5);
+      ctx.fillStyle = step % 2 ? '#ffffff' : '#52ff9d'; ctx.fillText('+', 0, 0);
     } else if (f.type === 'ring' || f.type === 'power' || f.type === 'shield') {
-      ctx.globalAlpha = inv;
-      ctx.strokeStyle = f.type === 'shield' ? '#e8f6ff' : col;
-      ctx.lineWidth = 6 * inv + 1;
-      if (f.type === 'shield') { ctx.shadowColor = '#e8f6ff'; ctx.shadowBlur = 16 * window.TWEAKS.glow; }
-      ctx.beginPath();
-      ctx.arc(cx, cy, 20 + k * (66 + m * 5), 0, Math.PI * 2);
-      ctx.stroke();
-      if (f.type === 'shield') {
-        ctx.globalAlpha = inv * 0.6;
-        ctx.beginPath(); ctx.arc(cx, cy, 12 + k * 30, 0, Math.PI * 2); ctx.stroke();
+      // pixelated ring of blocks
+      const c2 = f.type === 'shield' ? '#e8f6ff' : col;
+      const rad = 16 + sp * (52 + m * 5);
+      const n = Math.max(10, Math.round((rad * 2 * Math.PI) / 24));
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        blk(ctx, cx + Math.cos(a) * rad, cy + Math.sin(a) * rad, 9, (i + step) % 2 ? c2 : '#ffffff');
       }
     }
     ctx.restore();
@@ -605,7 +611,11 @@ function drawGame(ctx, g, paused, t) {
   ctx.fillRect(0, 0, W, H);
   // online guest sees the whole board rotated 180° so their side is at the bottom
   if (window.NET && NET.S.view === 1) { ctx.translate(W, H); ctx.rotate(Math.PI); }
-  if (g.shake > 0) ctx.translate((Math.random() - 0.5) * 8 * g.shake, (Math.random() - 0.5) * 8 * g.shake);
+  if (g.shake > 0) {
+    // chunky, whole-pixel shake — snaps in 8px steps for an arcade jolt
+    const amp = Math.round(g.shake * 1.6);
+    ctx.translate((((Math.random() * 2) | 0) - 1) * amp * 8, (((Math.random() * 2) | 0) - 1) * amp * 8);
+  }
 
   drawBoard(ctx, g);
   drawLegal(ctx, g, t);
@@ -632,12 +642,12 @@ function drawGame(ctx, g, paused, t) {
 
   ctx.restore();
 
-  // combat screen flash — a brief additive bloom on big hits/kills
+  // combat screen flash — a hard white additive pop on big hits/kills
   if (g.flash > 0) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = Math.min(0.5, g.flash);
-    ctx.fillStyle = 'rgba(120,150,255,1)';
+    ctx.globalAlpha = Math.min(0.6, g.flash);
+    ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, W, H);
     ctx.restore();
   }
