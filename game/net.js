@@ -85,10 +85,15 @@ const NET = (() => {
     S.status = 'RECONNECTING…';
     try { peer.reconnect(); } catch (e) {}
   }
-  // returning to the foreground after sharing: re-establish the dropped socket
+  // returning to the foreground after sharing/app-switching: re-establish the
+  // dropped socket AND give a fresh silence window so we don't instantly flag
+  // the opponent just because our own timers were paused while we were away
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && active()) tryReconnect();
+      if (document.visibilityState === 'visible' && active()) {
+        lastRecvAt = Date.now();
+        tryReconnect();
+      }
     });
   }
   function onPeerError(e, fatalMap) {
@@ -154,14 +159,18 @@ const NET = (() => {
   }
 
   // a peer that closes its tab often never fires a clean 'close', so each side
-  // pings every 1.5s and declares the opponent gone after ~6s of silence
+  // pings every 1.5s and declares the opponent gone after a stretch of silence.
+  // Only judge while WE are in the foreground — if our own tab is backgrounded
+  // its timers are throttled, so stale silence reflects us being away, not the
+  // opponent leaving (visibilitychange resets the clock when we return).
   function startHeartbeat() {
     stopHeartbeat();
     lastRecvAt = Date.now();
     hbTimer = setInterval(() => {
       if (!conn || !S.connected) return;
       try { conn.send({ t: 'ping' }); } catch (e) {}
-      if (Date.now() - lastRecvAt > 6000) onRemoteClosed();
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (Date.now() - lastRecvAt > 12000) onRemoteClosed();
     }, 1500);
   }
   function stopHeartbeat() { if (hbTimer) { clearInterval(hbTimer); hbTimer = null; } }
