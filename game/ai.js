@@ -6,12 +6,14 @@ window.AI = (() => {
   // hunt    = how hard the bot chases enemy pieces it can profitably kill (0 = ignores them, just rushes the castle)
   // safety  = how much it avoids parking a piece where the enemy can kill it for free next turn
   // combine = how readily it merges pieces into a heavier spearhead to crack a turtled defence
+  // eco     = how hard it dominates the midfield powerups and marches a battering ram — the squeeze
+  //           that punishes a turtle: snowball + an unkillable ram force the defender out or under
   const DIFFS = {
-    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18, moves: 1, hunt: 0, safety: 0, combine: 0 },
-    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1, hunt: 0.35, safety: 0.25, combine: 0.2 },
-    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1, hunt: 1.1, safety: 0.6, combine: 0.5 },
-    veryhard: { interval: 0.6, noise: 0, splitChance: 0.6, skip: 0, moves: 1, hunt: 1.4, safety: 0.85, combine: 0.95 },
-    inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2, hunt: 1.6, safety: 1, combine: 1.2 }, // flawless + two moves a turn
+    easy: { interval: 2.8, noise: 26, splitChance: 0.10, skip: 0.18, moves: 1, hunt: 0, safety: 0, combine: 0, eco: 0 },
+    normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1, hunt: 0.35, safety: 0.25, combine: 0.2, eco: 0.2 },
+    hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1, hunt: 1.1, safety: 0.6, combine: 0.5, eco: 0.5 },
+    veryhard: { interval: 0.6, noise: 0, splitChance: 0.6, skip: 0, moves: 1, hunt: 1.4, safety: 0.85, combine: 0.95, eco: 0.8 },
+    inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2, hunt: 1.6, safety: 1, combine: 1.2, eco: 1 }, // flawless + two moves a turn
   };
 
   // every selectable opponent. `name` is the in-game HUD label (keep short).
@@ -170,6 +172,24 @@ window.AI = (() => {
     return out;
   }
 
+  // Read the strategic situation once per turn. `turtle` (0..1) ramps up as the
+  // enemy huddles its army around its own castle instead of contesting the
+  // board; `enemyMaxGuard` is the strongest piece sitting in that home cluster —
+  // the value a spearhead must reach to batter through. The score weights below
+  // amplify the powerup squeeze and the ram march in proportion to `turtle`, so
+  // the harder the opponent turtles, the harder the bot punishes it.
+  function readEnv(g, own) {
+    const ek = g.castles[1 - own];
+    const enemies = g.pieces.filter((q) => q.owner !== own);
+    let homed = 0, guard = 0;
+    for (const q of enemies) {
+      const c = q.path ? q.path.dest[0] : q.col, r = q.path ? q.path.dest[1] : q.row;
+      if (dist(c, r, ek.col, ek.row) <= 3) { homed++; if (q.value > guard) guard = q.value; }
+    }
+    const frac = enemies.length ? homed / enemies.length : 0;
+    return { turtle: Math.max(0, Math.min(1, (frac - 0.5) * 2)), enemyMaxGuard: guard };
+  }
+
   function scoreMove(g, own, p, m, threats, sk) {
     const ek = g.castles[1 - own], mk = g.castles[own];
     const lowEnergy = mk.energy < mk.max * 0.55;
@@ -203,6 +223,8 @@ window.AI = (() => {
       s = 45;
       if (u && u.type === 'heart' && mk.energy < mk.max * 0.6) s += 30;
       if (u && u.type === 'charge' && p.value <= 4) s += 10;
+      // own the powerup economy; the squeeze intensifies the more they turtle
+      s += (sk.eco || 0) * (12 + (sk.turtle || 0) * 34);
     } else if (m.kind === 'combine') {
       const mate = stationaryAt(g, m.c, m.r);
       if (!mate) return 6;
@@ -231,6 +253,28 @@ window.AI = (() => {
           if (closer > 0) hunt = Math.max(hunt, closer * (q.value + 2) * 1.6 / (1 + dist(m.c, m.r, q.col, q.row) * 0.15));
         }
         s += hunt * sk.hunt;
+      }
+      // economy squeeze: drift toward the most valuable powerup. Owning the
+      // midfield powerups snowballs us (charge grows pieces, heart pads our
+      // castle) and forces a turtle to leave home to contest — or fall behind.
+      if (sk.eco > 0 && g.powerups.length) {
+        let pull = 0;
+        for (const u of g.powerups) {
+          const after = dist(m.c, m.r, u.col, u.row);
+          const closer = dist(p.col, p.row, u.col, u.row) - after;
+          if (closer <= 0) continue;
+          const worth = u.type === 'charge' ? 3 : u.type === 'heart' ? 2.4 : u.type === 'bolt' ? 2 : 1.6;
+          pull = Math.max(pull, closer * worth / (1 + after * 0.18));
+        }
+        s += pull * sk.eco * (1 + sk.turtle * 1.5);
+      }
+      // battering ram: a piece big enough to out-muscle the home guard should
+      // bee-line the enemy castle even though heavy pieces are slow (the advance
+      // term above barely pulls them). An unkillable ram is the stick that makes
+      // turtling lose — hardest when they're dug in.
+      if (sk.hunt > 0 && p.value >= 4 && sk.enemyMaxGuard && p.value >= sk.enemyMaxGuard) {
+        const closer = dist(p.col, p.row, ek.col, ek.row) - dist(m.c, m.r, ek.col, ek.row);
+        if (closer > 0) s += closer * (7 + sk.turtle * 16);
       }
       // fall back toward incoming attackers; the hotter the threat, the harder the pull
       for (const t of threats) {
@@ -289,10 +333,13 @@ window.AI = (() => {
     const d = DIFFS[ctl.spec.diff];
     if (Math.random() < d.skip) return; // hesitation, keeps lower levels human
     if (!g.pieces.some((p) => p.owner === own && !p.path)) return;
-    if (Math.random() < d.splitChance && botSplit(g, own, findThreats(g, own), d)) return;
+    // fold the live read of the board (turtle pressure, home guard) into the
+    // tier weights so scoreMove can react to a defending opponent
+    const sk = Object.assign({}, d, readEnv(g, own));
+    if (Math.random() < d.splitChance && botSplit(g, own, findThreats(g, own), sk)) return;
     // top tiers commit several moves a turn — recompute between each
     for (let i = 0; i < (d.moves || 1); i++) {
-      const best = botBestMove(g, own, findThreats(g, own), d.noise, d);
+      const best = botBestMove(g, own, findThreats(g, own), d.noise, sk);
       if (!best) break;
       commandMove(g, best.p, best.m.c, best.m.r);
     }
