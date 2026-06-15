@@ -1019,11 +1019,19 @@ function drawMiniMap(ctx, board, x, y, cs) {
 }
 
 function drawStars(ctx, t) {
-  for (let i = 0; i < 70; i++) {
-    const x = (i * 197) % W, y = (i * 397) % H;
-    const tw = 0.25 + 0.5 * Math.abs(Math.sin(t * 1.5 + i));
-    ctx.fillStyle = 'rgba(170,200,255,' + tw + ')';
-    ctx.fillRect(x, y, 3, 3);
+  // three parallax layers drifting downward — an attract-mode flight through
+  // space. Near layers are bigger, brighter and faster (depth cue).
+  const layers = [[40, 13, 2, 0.30], [26, 33, 3, 0.5], [14, 70, 4, 0.78]]; // [count, speed, size, baseAlpha]
+  for (let L = 0; L < layers.length; L++) {
+    const n = layers[L][0], speed = layers[L][1], size = layers[L][2], base = layers[L][3];
+    for (let i = 0; i < n; i++) {
+      const seed = i * 167 + L * 911;
+      const x = (seed * 197) % W;
+      const y = (((seed * 397) % H) + t * speed) % H;
+      const a = base + 0.22 * Math.sin(t * 2 + seed);
+      ctx.fillStyle = 'rgba(180,205,255,' + Math.max(0.08, Math.min(1, a)) + ')';
+      ctx.fillRect(x, y, size, size);
+    }
   }
 }
 
@@ -1088,6 +1096,40 @@ function titleBattle(ctx, t) {
   for (const f of TFX.fx) drawFxAt(ctx, f.x, f.y, f);
 }
 
+// attract-mode shine: a bright highlight sweeps across the logo letters every
+// few seconds (only the strokes catch the light, since we re-fill the text).
+function logoSweep(ctx, t) {
+  const pos = (t * 0.42) % 3.4;            // travels 0→1 across the screen, then a long gap
+  if (pos > 1) return;
+  const gx = -120 + pos * (W + 240);
+  const g = ctx.createLinearGradient(gx - 150, 0, gx + 150, 0);
+  g.addColorStop(0, 'rgba(255,255,255,0)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0.5)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.save();
+  ctx.font = '92px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = g;
+  ctx.fillText('CORTEX', W / 2 + 3, 238);
+  ctx.fillText('CLASH', W / 2 + 3, 358);
+  ctx.restore();
+}
+
+// CRT tube motion: a soft refresh band rolling down over the scanlines
+function crtFx(ctx, t) {
+  if (!window.TWEAKS.scanlines) return;
+  const bandY = (t * 130) % (H + 260) - 130;
+  const g = ctx.createLinearGradient(0, bandY - 130, 0, bandY + 130);
+  g.addColorStop(0, 'rgba(180,220,255,0)');
+  g.addColorStop(0.5, 'rgba(190,225,255,0.05)');
+  g.addColorStop(1, 'rgba(180,220,255,0)');
+  ctx.save();
+  ctx.fillStyle = g;
+  ctx.fillRect(0, bandY - 130, W, 260);
+  ctx.restore();
+}
+
 function drawTitle(ctx, boardIdx, t) {
   ctx.fillStyle = '#06060f';
   ctx.fillRect(0, 0, W, H);
@@ -1095,16 +1137,26 @@ function drawTitle(ctx, boardIdx, t) {
   drawStars(ctx, t);
   titleBattle(ctx, t);
 
-  glowText(ctx, 'HUMANS · CPUS · LLMS', W / 2, 130, 20, '#aebcff', 8);
-  // logo with chromatic offsets
+  // coin-op cabinet flavour in the top corners
+  glowText(ctx, 'CREDIT  FREE PLAY', 40, 62, 13, 'rgba(120,230,180,0.6)', 4, 'left');
+  glowText(ctx, '© 2126 PKZIPYA', W - 40, 62, 13, 'rgba(120,230,180,0.45)', 4, 'right');
+
+  glowText(ctx, 'HUMANS · CPUS · LLMS', W / 2, 132, 20, '#aebcff', 8);
+  // logo with animated chromatic offsets + a pulsing neon glow
+  const chroma = 4 + 2.5 * Math.sin(t * 2);
+  const pulse = 22 + 8 * Math.sin(t * 2.4);
   ctx.save();
   ctx.globalAlpha = 0.6;
-  glowText(ctx, 'CORTEX', W / 2 - 5, 235, 92, '#ff3df0', 2);
-  glowText(ctx, 'CLASH', W / 2 - 5, 355, 92, '#ff3df0', 2);
+  glowText(ctx, 'CORTEX', W / 2 - chroma, 235, 92, '#ff3df0', 2);
+  glowText(ctx, 'CLASH', W / 2 - chroma, 355, 92, '#ff3df0', 2);
   ctx.restore();
-  glowText(ctx, 'CORTEX', W / 2 + 3, 238, 92, '#19e6ff', 26);
-  glowText(ctx, 'CLASH', W / 2 + 3, 358, 92, '#19e6ff', 26);
+  glowText(ctx, 'CORTEX', W / 2 + chroma * 0.4, 238, 92, '#19e6ff', pulse);
+  glowText(ctx, 'CLASH', W / 2 + chroma * 0.4, 358, 92, '#19e6ff', pulse);
+  logoSweep(ctx, t);
   glowText(ctx, 'REAL-TIME NUMBER COMBAT', W / 2, 445, 19, 'rgba(232,246,255,0.65)', 6);
+
+  // blinking attract prompt
+  if (Math.floor(t * 1.6) % 2 === 0) glowText(ctx, '◈  INSERT COIN  ·  FREE PLAY  ◈', W / 2, 495, 16, '#52ff9d', 8);
 
   glowText(ctx, 'CHOOSE ARENA', W / 2, 540, 24, '#ffd23f', 10);
 
@@ -1218,6 +1270,7 @@ function drawTitle(ctx, boardIdx, t) {
   ctx.fillText('By PKZIPYA     Version #: ' + APP_VER, W / 2, y + 96 + 24);
 
   scanlines(ctx);
+  crtFx(ctx, t);
 }
 
 // ---------- opponent picker ----------
@@ -1256,6 +1309,7 @@ function drawPicker(ctx, picker, t) {
   UI.buttons.push({ x: W / 2 - 220, y, w: 440, h: 90, action: ACTIONS.pickerBack });
 
   scanlines(ctx);
+  crtFx(ctx, t);
 }
 
 // ---------- online screens ----------
