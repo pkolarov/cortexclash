@@ -4,6 +4,9 @@ Retro real-time strategy duel for two players, built as a single HTML5 canvas ga
 Numbered pieces battle across a 9×13 grid: low numbers run far and fast, high
 numbers hit hard. Drain the enemy castle to win.
 
+Play here: https://pkolarov.github.io/cortexclash/
+
+
 ## Play
 
 - **`index.html`** — the full game. Serve the folder with any static server, or
