@@ -77,6 +77,7 @@ function makeGame(boardIdx) {
 
 function pieceById(g, id) { return g.pieces.find((p) => p.id === id) || null; }
 function stationaryAt(g, c, r) { return g.pieces.find((p) => !p.path && p.col === c && p.row === r) || null; }
+function anyMoving(g) { return g.pieces.some((p) => p.path); }
 function castleAt(g, c, r) { return g.castles.find((k) => k.col === c && k.row === r) || null; }
 function powerupAt(g, c, r) { return g.powerups.find((u) => u.col === c && u.row === r) || null; }
 
@@ -473,5 +474,5 @@ function splitMove(g, pl, pieceId, k, c, r) {
 
 Object.assign(window, {
   COLS, ROWS, MAXV, makeGame, updateGame, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
-  legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt,
+  legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt, anyMoving,
 });

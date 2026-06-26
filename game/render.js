@@ -992,6 +992,46 @@ function drawBigBtn(ctx, x, y, w, h, label, col, t, quiet, size) {
   glowText(ctx, label, x + w / 2, y + h / 2 + 2, size || 26, col, 8);
 }
 
+// ---------- turn-based planning overlay ----------
+function drawArrow(ctx, ax, ay, bx, by, col) {
+  ctx.save();
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.shadowColor = col; ctx.shadowBlur = 10 * window.TWEAKS.glow; ctx.globalAlpha = 0.92;
+  ctx.setLineDash([14, 10]);
+  ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  ctx.setLineDash([]);
+  const a = Math.atan2(by - ay, bx - ax), hl = 26;
+  ctx.beginPath();
+  ctx.moveTo(bx, by);
+  ctx.lineTo(bx - hl * Math.cos(a - 0.5), by - hl * Math.sin(a - 0.5));
+  ctx.lineTo(bx - hl * Math.cos(a + 0.5), by - hl * Math.sin(a + 0.5));
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// the 30s planning UI: a countdown, a GO button, and a ghost arrow for every
+// queued order (a faded fragment token marks a queued split's landing cell).
+function drawTurnHud(ctx, g, t) {
+  if (g.over) return;
+  if (g.phase === 'resolve') { glowText(ctx, 'RESOLVING…', W / 2, 160, 28, '#ffd23f', 12); return; }
+  for (const id in g.orders) {
+    const o = g.orders[id], p = pieceById(g, +id);
+    if (!p) continue;
+    const col = PLAYER_COLORS[p.owner];
+    const ax = BX + (p.col + 0.5) * CELL, ay = BY + (p.row + 0.5) * CELL;
+    const bx = BX + (o.c + 0.5) * CELL, by = BY + (o.r + 0.5) * CELL;
+    drawArrow(ctx, ax, ay, bx, by, col);
+    if (o.kind === 'split') { ctx.save(); ctx.globalAlpha = 0.8; drawTokenBody(ctx, bx, by, o.k, p.owner, { t, bob: 0 }); ctx.restore(); }
+  }
+  const secs = Math.max(0, Math.ceil(g.planT)), warn = secs <= 5;
+  glowText(ctx, 'PLAN  ' + secs + 's', W / 2, 160, 32, warn ? '#ff5566' : '#19e6ff', warn ? 16 : 8);
+  const n = Object.keys(g.orders).length;
+  glowText(ctx, n + ' ORDER' + (n === 1 ? '' : 'S') + ' QUEUED', W / 2, 198, 14, 'rgba(232,246,255,0.6)', 4);
+  const bw = 320, bh = 70, bx = W / 2 - bw / 2, by = H - 80;
+  drawBigBtn(ctx, bx, by, bw, bh, '▶ GO', '#52ff9d', t, false, 30);
+  UI.buttons.push({ x: bx, y: by, w: bw, h: bh, action: ACTIONS.go });
+}
+
 // ---------- title ----------
 function drawMiniMap(ctx, board, x, y, cs) {
   ctx.fillStyle = 'rgba(110,140,255,0.12)';
@@ -1130,7 +1170,7 @@ function crtFx(ctx, t) {
   ctx.restore();
 }
 
-function drawTitle(ctx, boardIdx, t) {
+function drawTitle(ctx, boardIdx, t, mode) {
   ctx.fillStyle = '#06060f';
   ctx.fillRect(0, 0, W, H);
 
@@ -1155,10 +1195,30 @@ function drawTitle(ctx, boardIdx, t) {
   logoSweep(ctx, t);
   glowText(ctx, 'REAL-TIME NUMBER COMBAT', W / 2, 445, 19, 'rgba(232,246,255,0.65)', 6);
 
-  // blinking attract prompt
-  if (Math.floor(t * 1.6) % 2 === 0) glowText(ctx, '◈  INSERT COIN  ·  FREE PLAY  ◈', W / 2, 495, 16, '#52ff9d', 8);
+  // game-mode slider: real-time vs turn-based
+  const sw = 460, sh = 60, sx = W / 2 - sw / 2, sy = 468;
+  ctx.save();
+  ctx.fillStyle = '#0c0e20';
+  ctx.strokeStyle = 'rgba(110,140,255,0.35)';
+  ctx.lineWidth = 2;
+  rr(ctx, sx, sy, sw, sh, 16); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  const segs = [['REAL-TIME', 'rts', '#19e6ff'], ['TURN-BASED', 'turn', '#ffd23f']];
+  for (let i = 0; i < 2; i++) {
+    const label = segs[i][0], m = segs[i][1], col = segs[i][2];
+    const x = sx + 6 + i * (sw / 2 - 3), w = sw / 2 - 9, y = sy + 6, h = sh - 12, on = mode === m;
+    if (on) {
+      ctx.save();
+      ctx.fillStyle = col; ctx.globalAlpha = 0.16; rr(ctx, x, y, w, h, 12); ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = 2;
+      ctx.shadowColor = col; ctx.shadowBlur = 10 * window.TWEAKS.glow; rr(ctx, x, y, w, h, 12); ctx.stroke();
+      ctx.restore();
+    }
+    glowText(ctx, label, x + w / 2, y + h / 2 + 1, 16, on ? col : 'rgba(232,246,255,0.5)', on ? 8 : 0);
+    UI.buttons.push({ x, y, w, h, action: () => ACTIONS.setMode(m) });
+  }
 
-  glowText(ctx, 'CHOOSE ARENA', W / 2, 540, 24, '#ffd23f', 10);
+  glowText(ctx, 'CHOOSE ARENA', W / 2, 552, 24, '#ffd23f', 10);
 
   const bw = 880, bh = 88, gap = 10;
   let y = 585;

@@ -13,6 +13,15 @@
   let joinCode = '';
   let last = performance.now();
 
+  // RTS (real-time) vs Turn-based (plan 30s, then everyone's queued orders play
+  // out). Mode is chosen on the title screen and persists.
+  let gameMode = localStorage.getItem('cc-mode') === 'turn' ? 'turn' : 'rts';
+  window.CC_MODE = gameMode;
+  const PLAN_SECS = 30;     // planning window per turn
+  const MIN_RES = 1.6;      // resolution runs at least this long (so campers drain)
+  const MAX_RES = 5;        // …and no longer than this (safety for stuck movement)
+  let tickSec = -1;         // last whole-second we played a countdown tick on
+
   window.UI = { buttons: [] };
 
   // Android edge-swipe / back gesture fires popstate, which would otherwise
@@ -22,12 +31,28 @@
 
   function startGame() {
     g = makeGame(boardIdx);
+    // online turn-sync isn't wired yet, so networked matches stay real-time
+    const online = NET.S.mode === 'host' || NET.S.mode === 'guest';
+    g.mode = online ? 'rts' : gameMode;
+    if (g.mode === 'turn') initTurnState();
     paused = false;
     netLost = false;
     setSplit(null);
     drags.clear();
     screen = 'game';
     pushGameGuard();
+  }
+
+  // (re)enter a planning phase: fresh 30s clock, empty order book, clean fx
+  function initTurnState() {
+    g.phase = 'plan';
+    g.planT = PLAN_SECS;
+    g.resolveT = 0;
+    g.orders = {};
+    g.turnNo = (g.turnNo || 0) + 1;
+    g.fx = []; g.shake = 0; g.flash = 0;
+    tickSec = -1;
+    if (AI.newTurn) AI.newTurn(g);
   }
 
   function backToTitle() {
@@ -90,6 +115,9 @@
     pickerChoose: (i) => { if (picker) picker.onPick(picker.options[i]); },
     pickerBack: () => { SFX.cursor(); picker = null; screen = 'title'; },
     pickBoard: (i) => { boardIdx = i; localStorage.setItem('cc-board', String(i)); SFX.cursor(); },
+    setMode: (m) => { gameMode = m === 'turn' ? 'turn' : 'rts'; window.CC_MODE = gameMode; localStorage.setItem('cc-mode', gameMode); SFX.cursor(); },
+    // commit the turn early (skip the rest of the planning clock)
+    go: () => { if (g && g.mode === 'turn' && g.phase === 'plan' && !g.over) { setSplit(null); startResolve(); } },
     createOnline: () => { SFX.select(); NET.hostRoom(); screen = 'lobby'; },
     joinOnline: () => { SFX.cursor(); screen = 'join'; },
     cancelOnline: () => { SFX.cursor(); backToTitle(); },
@@ -293,6 +321,7 @@
   }
 
   function fireSplit(c, r) {
+    if (g && g.mode === 'turn') { queueSplitOrder(splitUI.pl, splitUI.pieceId, splitUI.k, c, r); closeSplitUI(); return; }
     dispatchSplitMove(splitUI.pl, splitUI.pieceId, splitUI.k, c, r);
     closeSplitUI();
   }
@@ -335,6 +364,8 @@
       ACTIONS.pause();
       return;
     }
+    // turn-based planning has its own (queueing) board input, isolated from RTS
+    if (screen === 'game' && g && g.mode === 'turn') { handleTurnDown(e, lx, ly); return; }
     if (screen === 'game' && g && !g.over && !paused && !netLost) {
       const [c, r] = cellOf(lx, ly);
       if (!inBounds(c, r)) return;
@@ -350,6 +381,7 @@
   });
 
   canvas.addEventListener('pointerup', (e) => {
+    if (screen === 'game' && g && g.mode === 'turn') { handleTurnUp(e); return; }
     const drag = drags.get(e.pointerId);
     drags.delete(e.pointerId);
     if (!drag || screen !== 'game' || !g || g.over || paused || netLost) return;
@@ -432,6 +464,118 @@
     window.DRAGVIS = out;
   }
 
+  // ---------- turn-based: plan → resolve loop ----------
+  function tickTurn(dt) {
+    if (g.over) return;
+    if (g.phase === 'plan') {
+      AI.tick(g, dt);                 // LLM sides request + queue orders; bots are planned at resolve
+      g.planT -= dt;
+      const s = Math.ceil(g.planT);
+      if (s <= 5 && s >= 1 && s !== tickSec) { tickSec = s; SFX.cursor(); }  // last-5s countdown beeps
+      if (g.planT <= 0) startResolve();
+    } else {
+      updateGame(g, dt);
+      g.resolveT += dt;
+      if (g.over) return;
+      if ((g.resolveT >= MIN_RES && !anyMoving(g)) || g.resolveT >= MAX_RES) startPlan();
+    }
+  }
+
+  // commit: bots plan their whole turn now, then every queued order fires at once
+  function startResolve() {
+    for (let own = 0; own < 2; own++) {
+      const ctl = AI.S.ctls[own];
+      if (ctl && ctl.spec.kind === 'bot') {
+        for (const o of AI.planTurn(g, own)) if (!g.orders[o.id]) g.orders[o.id] = o;
+      }
+    }
+    applyOrders();
+    setSplit(null);
+    g.sel = [null, null];
+    g.phase = 'resolve';
+    g.resolveT = 0;
+    SFX.select();
+  }
+
+  function startPlan() { initTurnState(); SFX.cursor(); }
+
+  // dispatch the order book through the validating engine calls (illegal or now-
+  // blocked orders are simply skipped), lowest id first for a stable resolution
+  function applyOrders() {
+    const ids = Object.keys(g.orders).map(Number).sort((a, b) => a - b);
+    for (const id of ids) {
+      const o = g.orders[id], p = pieceById(g, id);
+      if (!p || p.path) continue;
+      if (o.kind === 'split') splitMove(g, p.owner, id, o.k | 0, o.c | 0, o.r | 0);
+      else commandPieceTo(g, p.owner, id, o.c | 0, o.r | 0);
+    }
+    g.orders = {};
+  }
+
+  function queueOrder(pl, pieceId, c, r) { g.orders[pieceId] = { id: pieceId, kind: 'move', c, r }; SFX.select(); }
+  function queueSplitOrder(pl, pieceId, k, c, r) { g.orders[pieceId] = { id: pieceId, kind: 'split', k, c, r }; SFX.split(); }
+  function cancelOrder(pieceId) { if (g.orders[pieceId]) { delete g.orders[pieceId]; SFX.cursor(); } }
+
+  // press during planning: select the pressed piece (for the legal-cell glow) and
+  // start tracking the pointer so a tap and a drag can be told apart on release
+  function handleTurnDown(e, lx, ly) {
+    if (g.over || netLost || g.phase !== 'plan') return;
+    const [c, r] = cellOf(lx, ly);
+    if (!inBounds(c, r)) return;
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    const sp = ownPieceAt(c, r);
+    drags.set(e.pointerId, {
+      c, r, pieceId: sp ? sp.id : null, pl: sp ? sp.owner : -1, lx, ly, startX: lx, startY: ly,
+      moved: false, fromChip: false, wasSel: sp ? g.sel[sp.owner] === sp.id : false,
+      hadOrder: sp ? !!g.orders[sp.id] : false,
+    });
+    if (sp && !splitUI) g.sel[sp.owner] = sp.id;
+  }
+
+  // release during planning: queue / replace / cancel an order
+  function handleTurnUp(e) {
+    const drag = drags.get(e.pointerId);
+    drags.delete(e.pointerId);
+    if (!drag || g.over || netLost || g.phase !== 'plan') return;
+    const { lx, ly } = toLogical(e);
+    const [c, r] = cellOf(lx, ly);
+    // fragment chip dragged onto a gold cell → queue a split
+    if (drag.fromChip) {
+      const b = drag.chipBox, onChip = b && lx >= b.x && lx <= b.x + b.w && ly >= b.y && ly <= b.y + b.h;
+      if (!onChip && splitUI && inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
+      return;
+    }
+    if (splitUI) {
+      if (inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
+      else if (c === drag.c && r === drag.r) closeSplitUI();
+      return;
+    }
+    // dragged a piece onto another cell → queue that move
+    if (drag.pieceId != null && drag.moved && !(c === drag.c && r === drag.r)) {
+      const p = pieceById(g, drag.pieceId), land = p && dragLanding(g, p, c, r);
+      if (land && land.landC != null) { queueOrder(drag.pl, drag.pieceId, land.landC, land.landR); g.sel[drag.pl] = null; }
+      return;
+    }
+    // pure tap on the pressed own piece: double-tap explodes, a deliberate re-tap cancels its order
+    if (drag.pieceId != null && c === drag.c && r === drag.r) {
+      const now = performance.now();
+      if (now - lastTap.t < 350 && lastTap.c === c && lastTap.r === r) {
+        const sp = ownPieceAt(c, r);
+        if (sp && sp.value >= 2) { openPicker(sp.owner, sp.id); lastTap.t = 0; return; }
+      }
+      lastTap = { t: now, c, r };
+      if (drag.wasSel && drag.hadOrder) { cancelOrder(drag.pieceId); g.sel[drag.pl] = null; }
+      return;
+    }
+    // tapped a destination cell with a piece selected → queue the move
+    if (inBounds(c, r)) {
+      for (const pl of controllablePls()) {
+        const id = g.sel[pl], p = id != null && pieceById(g, id);
+        if (p && legalMoves(g, p).some((m) => m.c === c && m.r === r)) { queueOrder(pl, p.id, c, r); g.sel[pl] = null; return; }
+      }
+    }
+  }
+
   function frame(now) {
     // a thrown exception must never stop the loop — that would freeze the whole
     // game. Whatever happens in the body, always reschedule the next frame.
@@ -450,8 +594,8 @@
       if (NET.S.mode === 'guest') {
         if (!paused) NET.guestSmooth(g, dt);
       } else if (!paused) {
-        updateGame(g, dt);
-        AI.tick(g, dt);
+        if (g.mode === 'turn') tickTurn(dt);
+        else { updateGame(g, dt); AI.tick(g, dt); }
       }
       // the split picker dies with its piece (moved, killed, merged, game over)
       if (splitUI) {
@@ -464,6 +608,7 @@
       drawGame(ctx, g, paused, t);
       drawDragTrail(ctx, g, t);
       drawSplitUI(ctx, g, t);
+      if (g.mode === 'turn') drawTurnHud(ctx, g, t);
       if (!g.over) AI.drawHud(ctx); // don't freeze a taunt/status on the win screen
       if (NET.S.mode === 'host') NET.hostTick(g, paused, now);
       if (netLost) {
@@ -479,7 +624,7 @@
     } else if (screen === 'join') {
       drawJoin(ctx, joinCode, t);
     } else {
-      drawTitle(ctx, boardIdx, t);
+      drawTitle(ctx, boardIdx, t, gameMode);
     }
   }
 

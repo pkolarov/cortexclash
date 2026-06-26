@@ -328,7 +328,55 @@ window.AI = (() => {
     return best && bestScore > 0 ? best : null;
   }
 
+  // Turn-based planner: queue one order per idle piece for `own` — the best
+  // legal move (greedily reserving destination cells so two pieces don't target
+  // the same square), plus an optional split. Returns [{id,kind,k?,c,r}].
+  function planTurn(g, own) {
+    const spec = S.ctls[own] && S.ctls[own].spec;
+    const d = DIFFS[(spec && spec.diff) || 'normal'];
+    const sk = Object.assign({}, d, readEnv(g, own));
+    const threats = findThreats(g, own);
+    const orders = [], taken = new Set(), skip = new Set();
+    const free = (c, r) => !taken.has(c + ',' + r);
+    const take = (c, r) => taken.add(c + ',' + r);
+    // one optional split, like botSplit but recorded as an order
+    if (Math.random() < (d.splitChance || 0) && g.pieces.filter((p) => p.owner === own).length < 10) {
+      let best = null, bestScore = 35;
+      for (const p of g.pieces) {
+        if (p.owner !== own || p.path || p.value < 3) continue;
+        for (const k of [1, 2, 3]) {
+          if (k >= p.value) continue;
+          const ghost = Object.assign({}, p, { value: k });
+          for (const m of legalMoves(g, ghost)) {
+            if (!free(m.c, m.r)) continue;
+            const s = scoreMove(g, own, ghost, m, threats, sk);
+            if (s > bestScore) { bestScore = s; best = { id: p.id, k, c: m.c, r: m.r }; }
+          }
+        }
+      }
+      if (best) { orders.push({ id: best.id, kind: 'split', k: best.k, c: best.c, r: best.r }); take(best.c, best.r); skip.add(best.id); }
+    }
+    // one move per remaining idle piece, heaviest first so slow rams claim lanes
+    const mine = g.pieces.filter((p) => p.owner === own && !p.path && !skip.has(p.id)).sort((a, b) => b.value - a.value);
+    for (const p of mine) {
+      let best = null, bestScore = 0;
+      for (const m of legalMoves(g, p)) {
+        if (!free(m.c, m.r)) continue;
+        const s = scoreMove(g, own, p, m, threats, sk);
+        if (s > bestScore) { bestScore = s; best = m; }
+      }
+      if (best) { orders.push({ id: p.id, kind: 'move', c: best.c, r: best.r }); take(best.c, best.r); }
+    }
+    return orders;
+  }
+
+  // start of a turn-based planning phase: let LLM sides re-request once, drop stale plans
+  function newTurn(g) {
+    for (const ctl of S.ctls) if (ctl && ctl.spec.kind === 'llm') { ctl.pending = null; ctl.busy = false; ctl.timer = 0.4; }
+  }
+
   function botAct(g, ctl) {
+    if (g.mode === 'turn') return; // turn mode plans the whole side at resolve, not in real time
     const own = ctl.own;
     const d = DIFFS[ctl.spec.diff];
     if (Math.random() < d.skip) return; // hesitation, keeps lower levels human
@@ -526,22 +574,32 @@ window.AI = (() => {
     ctl.pending = null;
     if (!a || g.over) return;
     if (a.taunt) { ctl.taunt = String(a.taunt).slice(0, 48).toUpperCase(); ctl.tauntT = 6; }
-    for (const mv of (a.moves || []).slice(0, 3)) {
+    // turn-based: don't move now — queue orders that fire when the turn resolves
+    const turn = g.mode === 'turn';
+    for (const mv of (a.moves || []).slice(0, turn ? 8 : 3)) {
       const p = pieceById(g, mv.piece | 0);
       if (!p || p.owner !== ctl.own || p.path) continue;
       if (!legalMoves(g, p).some((m) => m.c === mv.c && m.r === mv.r)) continue;
-      commandMove(g, p, mv.c | 0, mv.r | 0);
+      if (turn) g.orders[p.id] = { id: p.id, kind: 'move', c: mv.c | 0, r: mv.r | 0 };
+      else commandMove(g, p, mv.c | 0, mv.r | 0);
       ctl.errs = 0;
     }
     if (a.split) {
       const p = pieceById(g, a.split | 0);
       if (p && p.owner === ctl.own && !p.path && p.value >= 2) {
-        const prev = g.sel[ctl.own];
-        g.sel[ctl.own] = p.id;
-        trySplit(g, ctl.own);
-        g.sel[ctl.own] = prev === p.id ? null : prev;
+        if (turn) {
+          const k = Math.floor(p.value / 2), ghost = Object.assign({}, p, { value: k });
+          const adj = k >= 1 && legalMoves(g, ghost).find((m) => Math.max(Math.abs(m.c - p.col), Math.abs(m.r - p.row)) === 1);
+          if (adj) g.orders[p.id] = { id: p.id, kind: 'split', k, c: adj.c, r: adj.r };
+        } else {
+          const prev = g.sel[ctl.own];
+          g.sel[ctl.own] = p.id;
+          trySplit(g, ctl.own);
+          g.sel[ctl.own] = prev === p.id ? null : prev;
+        }
       }
     }
+    if (turn) ctl.timer = 999; // one plan per turn; AI.newTurn re-arms it next turn
   }
 
   function fallbackToBot(ctl, msg) {
@@ -620,6 +678,6 @@ window.AI = (() => {
   return {
     S, ROSTER, CLAUDE_IDS, DIFF_IDS,
     startSingle, startWatch, restart, stop, active, ensureKeys,
-    tick, drawHud, byId,
+    tick, drawHud, byId, planTurn, newTurn,
   };
 })();
