@@ -267,24 +267,32 @@ function endGame(g, winner) {
   SFX.fanfare();
 }
 
-// turn-based mid-flight combat: two opposing moving pieces that overlap (a swap
-// or a path crossing) clash where they meet — the bigger rolls on, equal values
-// annihilate. Checked per frame, so timing is respected: a piece that already
-// passed the crossing is no longer near.
-function clashMoving(g, a, b) {
-  const av = a.value, bv = b.value, big = Math.max(av, bv);
-  const pa = piecePos(a), pb = piecePos(b);
+// Resolve a pile-up of pieces that meet at one spot mid-flight as a single
+// group, deterministically (no dependence on who arrived a frame sooner): each
+// side's values combine (a piece caps at 6), the totals cancel, and the heavier
+// side's strongest piece survives carrying the difference. Equal totals wipe the
+// whole pile. (A piece landing exactly on a stationary enemy at its destination
+// is a deliberate attack and is left to arrival.)
+function resolveCluster(g, cluster) {
+  let s0 = 0, s1 = 0;
+  for (const p of cluster) { if (p.owner === 0) s0 += p.value; else s1 += p.value; }
+  s0 = Math.min(MAXV, s0); s1 = Math.min(MAXV, s1);
+  const big = Math.max(s0, s1);
   if (big >= 5) g.shake = Math.max(g.shake, big >= 6 ? 1.6 : 0.95);
   g.flash = Math.min(0.55, g.flash + 0.12 + big * 0.05);
-  addFx(g, 'shock', Math.round((pa[0] + pb[0]) / 2), Math.round((pa[1] + pb[1]) / 2), a.owner, big);
-  if (av === bv) {
-    addFx(g, 'boom', Math.round(pa[0]), Math.round(pa[1]), a.owner, av);
-    addFx(g, 'boom', Math.round(pb[0]), Math.round(pb[1]), b.owner, bv);
-    removePiece(g, a); removePiece(g, b);
-  } else {
-    const l = av > bv ? b : a, pl = piecePos(l);
-    addFx(g, 'boom', Math.round(pl[0]), Math.round(pl[1]), l.owner, l.value);
-    removePiece(g, l);
+  const c = piecePos(cluster[0]);
+  addFx(g, 'shock', Math.round(c[0]), Math.round(c[1]), cluster[0].owner, big);
+  let survivor = null;
+  if (s0 !== s1) {
+    const win = s0 > s1 ? 0 : 1;
+    survivor = cluster.filter((p) => p.owner === win).sort((x, y) => y.value - x.value)[0];
+    survivor.value = Math.abs(s0 - s1);   // combined force minus the opposing total
+  }
+  for (const p of cluster) {
+    if (p === survivor) continue;
+    const pp = piecePos(p);
+    addFx(g, 'boom', Math.round(pp[0]), Math.round(pp[1]), p.owner, p.value);
+    removePiece(g, p);
   }
   SFX.boom(big);
 }
@@ -294,16 +302,18 @@ function resolveCrossings(g) {
   for (const a of movers) {
     if (!a.path || !g.pieces.includes(a)) continue;
     const pa = piecePos(a);
+    const cluster = [];
+    let hasEnemy = false;
     for (const b of g.pieces) {
-      if (b === a || b.owner === a.owner || !g.pieces.includes(b)) continue;
       const pb = piecePos(b);
       if (Math.abs(pa[0] - pb[0]) >= 0.6 || Math.abs(pa[1] - pb[1]) >= 0.6) continue;
-      if (b.path) { clashMoving(g, a, b); break; }       // two movers cross / meet head-on
-      // a moving piece overlapping a STATIONARY enemy that stopped in its lane
-      // can't fly over it — it collides like an attack. (Its own destination is
-      // left to arrival, so the normal land-on-enemy attack still runs there.)
-      if (a.path.dest[0] !== b.col || a.path.dest[1] !== b.row) { combat(g, a, b); break; }
+      // a stationary enemy sitting on a's destination is a deliberate attack —
+      // leave it to arrival (so it uses the normal land-on-enemy combat)
+      if (b !== a && !b.path && a.path.dest[0] === b.col && a.path.dest[1] === b.row) continue;
+      cluster.push(b);
+      if (b.owner !== a.owner) hasEnemy = true;
     }
+    if (hasEnemy && cluster.length >= 2) resolveCluster(g, cluster);
   }
 }
 
