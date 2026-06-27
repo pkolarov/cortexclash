@@ -31,9 +31,7 @@
 
   function startGame() {
     g = makeGame(boardIdx);
-    // online turn-sync isn't wired yet, so networked matches stay real-time
-    const online = NET.S.mode === 'host' || NET.S.mode === 'guest';
-    g.mode = online ? 'rts' : gameMode;
+    g.mode = gameMode;              // host/solo/2P; an online guest is overridden by the host's start packet
     if (g.mode === 'turn') initTurnState();
     paused = false;
     netLost = false;
@@ -49,6 +47,7 @@
     g.planT = PLAN_SECS;
     g.resolveT = 0;
     g.orders = {};
+    g.ready = [false, false];       // online: each side's "GO" flag (resolve when both, or timer)
     g.turnNo = (g.turnNo || 0) + 1;
     g.fx = []; g.shake = 0; g.flash = 0;
     tickSec = -1;
@@ -116,8 +115,15 @@
     pickerBack: () => { SFX.cursor(); picker = null; screen = 'title'; },
     pickBoard: (i) => { boardIdx = i; localStorage.setItem('cc-board', String(i)); SFX.cursor(); },
     setMode: (m) => { gameMode = m === 'turn' ? 'turn' : 'rts'; window.CC_MODE = gameMode; localStorage.setItem('cc-mode', gameMode); SFX.cursor(); },
-    // commit the turn early (skip the rest of the planning clock)
-    go: () => { if (g && g.mode === 'turn' && g.phase === 'plan' && !g.over) { setSplit(null); startResolve(); } },
+    // commit the turn early. solo/2P resolve at once; online needs both sides
+    // ready (or the clock), so GO is a "ready" handshake there
+    go: () => {
+      if (!(g && g.mode === 'turn' && g.phase === 'plan' && !g.over)) return;
+      setSplit(null);
+      if (NET.S.mode === 'guest') { NET.send({ t: 'ready' }); SFX.cursor(); return; }
+      if (NET.S.mode === 'host') { g.ready[0] = true; SFX.cursor(); return; } // tickTurn resolves once both are ready
+      startResolve();
+    },
     createOnline: () => { SFX.select(); NET.hostRoom(); screen = 'lobby'; },
     joinOnline: () => { SFX.cursor(); screen = 'join'; },
     cancelOnline: () => { SFX.cursor(); backToTitle(); },
@@ -155,9 +161,11 @@
 
   NET.bind({
     onPeerJoined: () => { startGame(); NET.sendStart(boardIdx, g); },
-    onGuestStart: (bi, maxE, walls, pieces) => {
+    onGuestStart: (bi, maxE, walls, pieces, mode) => {
       boardIdx = Math.max(0, Math.min(BOARDS.length - 1, bi | 0));
       g = makeGame(boardIdx);
+      g.mode = mode === 'turn' ? 'turn' : 'rts';
+      if (g.mode === 'turn') { g.phase = 'plan'; g.planT = PLAN_SECS; g.orders = {}; g.resolveT = 0; g.ready = [false, false]; }
       if (Array.isArray(walls)) g.walls = new Set(walls); // chaos arenas are host-generated
       // CHAOS armies are random per-makeGame; take the host's so there's no
       // start-of-match flash of a wrong (locally-rolled) army on the guest
@@ -180,8 +188,12 @@
     },
     onState: (m) => {
       if (screen !== 'game' || !g) return;
+      const prevPhase = g.phase;
       NET.unpackInto(g, m.s);
       paused = !!m.p;
+      // guest: a phase flip (plan→resolve, or into a fresh plan) wipes our local
+      // ghost orders — they've either fired or a new turn has begun
+      if (g.mode === 'turn' && g.phase !== prevPhase) g.orders = {};
       if (m.snd) for (const s of m.snd) { const fn = SFX[s[0]]; if (typeof fn === 'function') fn.apply(SFX, s[1] || []); }
     },
     onGuestInput: (m) => {
@@ -192,6 +204,25 @@
         return;
       }
       if (paused) return;
+      // turn-based: the guest sends queued orders / a ready flag, not live taps
+      if (g.mode === 'turn') {
+        if (g.phase !== 'plan') return;
+        if (m.t === 'order') {
+          const p = pieceById(g, m.id | 0);
+          if (p && p.owner === 1 && !p.path && legalMoves(g, p).some((x) => x.c === (m.c | 0) && x.r === (m.r | 0))) g.orders[p.id] = { id: p.id, kind: 'move', c: m.c | 0, r: m.r | 0 };
+        } else if (m.t === 'sorder') {
+          const p = pieceById(g, m.id | 0), k = m.k | 0;
+          if (p && p.owner === 1 && !p.path && k >= 1 && k < p.value) {
+            const ghost = Object.assign({}, p, { value: k });
+            if (legalMoves(g, ghost).some((x) => x.c === (m.c | 0) && x.r === (m.r | 0))) g.orders[p.id] = { id: p.id, kind: 'split', k, c: m.c | 0, r: m.r | 0 };
+          }
+        } else if (m.t === 'cancel') {
+          delete g.orders[m.id | 0];
+        } else if (m.t === 'ready') {
+          g.ready[1] = true;
+        }
+        return;
+      }
       if (m.t === 'tap') {
         const c = m.c | 0, r = m.r | 0;
         if (inBounds(c, r)) tapCell(g, c, r, 1);
@@ -472,7 +503,7 @@
       g.planT -= dt;
       const s = Math.ceil(g.planT);
       if (s <= 5 && s >= 1 && s !== tickSec) { tickSec = s; SFX.cursor(); }  // last-5s countdown beeps
-      if (g.planT <= 0) startResolve();
+      if (g.planT <= 0 || (g.ready[0] && g.ready[1])) startResolve();        // timer, or both sides ready (online)
     } else {
       updateGame(g, dt);
       g.resolveT += dt;
@@ -512,9 +543,24 @@
     g.orders = {};
   }
 
-  function queueOrder(pl, pieceId, c, r) { g.orders[pieceId] = { id: pieceId, kind: 'move', c, r }; SFX.select(); }
-  function queueSplitOrder(pl, pieceId, k, c, r) { g.orders[pieceId] = { id: pieceId, kind: 'split', k, c, r }; SFX.split(); }
-  function cancelOrder(pieceId) { if (g.orders[pieceId]) { delete g.orders[pieceId]; SFX.cursor(); } }
+  // online guest mirrors each order to the host (the authority), which validates
+  // and stores it for owner-1; solo/2P/host just keep it locally
+  function queueOrder(pl, pieceId, c, r) {
+    g.orders[pieceId] = { id: pieceId, kind: 'move', c, r };
+    if (NET.S.mode === 'guest') NET.send({ t: 'order', id: pieceId, c, r });
+    SFX.select();
+  }
+  function queueSplitOrder(pl, pieceId, k, c, r) {
+    g.orders[pieceId] = { id: pieceId, kind: 'split', k, c, r };
+    if (NET.S.mode === 'guest') NET.send({ t: 'sorder', id: pieceId, k, c, r });
+    SFX.split();
+  }
+  function cancelOrder(pieceId) {
+    if (!g.orders[pieceId]) return;
+    delete g.orders[pieceId];
+    if (NET.S.mode === 'guest') NET.send({ t: 'cancel', id: pieceId });
+    SFX.cursor();
+  }
 
   // press during planning: select the pressed piece (for the legal-cell glow) and
   // start tracking the pointer so a tap and a drag can be told apart on release
@@ -592,7 +638,9 @@
     UI.buttons.length = 0;
     if (screen === 'game' && g) {
       if (NET.S.mode === 'guest') {
-        if (!paused) NET.guestSmooth(g, dt);
+        // turn-based: freeze while planning (the host owns the clock); the host's
+        // phase/countdown arrive via the state stream. Smooth only during resolve.
+        if (!paused && !(g.mode === 'turn' && g.phase === 'plan')) NET.guestSmooth(g, dt);
       } else if (!paused) {
         if (g.mode === 'turn') tickTurn(dt);
         else { updateGame(g, dt); AI.tick(g, dt); }

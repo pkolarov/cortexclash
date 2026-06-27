@@ -1013,23 +1013,33 @@ function drawArrow(ctx, ax, ay, bx, by, col) {
 // queued order (a faded fragment token marks a queued split's landing cell).
 function drawTurnHud(ctx, g, t) {
   if (g.over) return;
-  if (g.phase === 'resolve') { glowText(ctx, 'RESOLVING…', W / 2, 160, 28, '#ffd23f', 12); return; }
-  for (const id in g.orders) {
-    const o = g.orders[id], p = pieceById(g, +id);
-    if (!p) continue;
-    const col = PLAYER_COLORS[p.owner];
-    const ax = BX + (p.col + 0.5) * CELL, ay = BY + (p.row + 0.5) * CELL;
-    const bx = BX + (o.c + 0.5) * CELL, by = BY + (o.r + 0.5) * CELL;
-    drawArrow(ctx, ax, ay, bx, by, col);
-    if (o.kind === 'split') { ctx.save(); ctx.globalAlpha = 0.8; drawTokenBody(ctx, bx, by, o.k, p.owner, { t, bob: 0 }); ctx.restore(); }
+  const mine = myOwners();
+  // order ghosts are board-space — match the guest's 180° board flip, and only
+  // show MY side's plan (a simultaneous-turn game keeps the opponent's hidden)
+  if (g.phase === 'plan') {
+    ctx.save();
+    if (window.NET && NET.S.view === 1) { ctx.translate(W, H); ctx.rotate(Math.PI); }
+    for (const id in g.orders) {
+      const o = g.orders[id], p = pieceById(g, +id);
+      if (!p || mine.indexOf(p.owner) < 0) continue;
+      const col = PLAYER_COLORS[p.owner];
+      const ax = BX + (p.col + 0.5) * CELL, ay = BY + (p.row + 0.5) * CELL;
+      const bx = BX + (o.c + 0.5) * CELL, by = BY + (o.r + 0.5) * CELL;
+      drawArrow(ctx, ax, ay, bx, by, col);
+      if (o.kind === 'split') { ctx.save(); ctx.globalAlpha = 0.8; drawTokenBody(ctx, bx, by, o.k, p.owner, { t, bob: 0 }); ctx.restore(); }
+    }
+    ctx.restore();
   }
+  // screen-space UI, upright on both devices
+  if (g.phase === 'resolve') { glowText(ctx, 'RESOLVING…', W / 2, 160, 28, '#ffd23f', 12); return; }
   const secs = Math.max(0, Math.ceil(g.planT)), warn = secs <= 5;
   glowText(ctx, 'PLAN  ' + secs + 's', W / 2, 160, 32, warn ? '#ff5566' : '#19e6ff', warn ? 16 : 8);
-  const n = Object.keys(g.orders).length;
+  let n = 0;
+  for (const id in g.orders) { const p = pieceById(g, +id); if (p && mine.indexOf(p.owner) >= 0) n++; }
   glowText(ctx, n + ' ORDER' + (n === 1 ? '' : 'S') + ' QUEUED', W / 2, 198, 14, 'rgba(232,246,255,0.6)', 4);
   const bw = 320, bh = 70, bx = W / 2 - bw / 2, by = H - 80;
   drawBigBtn(ctx, bx, by, bw, bh, '▶ GO', '#52ff9d', t, false, 30);
-  UI.buttons.push({ x: bx, y: by, w: bw, h: bh, action: ACTIONS.go });
+  UI.buttons.push({ x: bx, y: by, w: bw, h: bh, abs: true, action: ACTIONS.go });
 }
 
 // ---------- title ----------

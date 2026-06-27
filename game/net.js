@@ -190,7 +190,7 @@ const NET = (() => {
     if (m.t === 'ping') return;
     if (m.t === 'start' && H.onGuestStart) {
       S.hostSpeed = m.spd || 1;
-      H.onGuestStart(m.b, m.m, m.walls, m.pcs);
+      H.onGuestStart(m.b, m.m, m.walls, m.pcs, m.mode);
     }
     if (m.t === 'state' && H.onState) {
       S.hostSpeed = m.v || S.hostSpeed;
@@ -200,13 +200,17 @@ const NET = (() => {
 
   // ---------- state sync ----------
   function pack(g) {
-    return {
+    const s = {
       p: g.pieces.map((p) => [p.id, p.owner, p.value, p.col, p.row, p.path ? p.path.dest : 0, p.path ? p.path.cells : 0, p.prog, p.from, p.shield ? 1 : 0, p.boostUntil, p.charged ? 1 : 0]),
       c: g.castles.map((k) => [k.energy, k.lastDrainT, k.max, k.attackT]),
       u: g.powerups.map((u) => [u.type, u.col, u.row, u.born]),
       f: g.fx.map((f) => [f.type, f.c, f.r, f.owner, f.t, f.m || 0]),
       sel: g.sel, time: g.time, w: g.winner, o: g.over ? 1 : 0, ot: g.overT, sh: g.shake, fl: g.flash || 0,
     };
+    // turn-based: mirror the host's phase + planning clock so the guest's
+    // countdown and plan/resolve UI stay in lockstep with the authority
+    if (g.mode === 'turn') { s.ph = g.phase; s.pt = g.planT; }
+    return s;
   }
 
   function unpackInto(g, s) {
@@ -218,7 +222,11 @@ const NET = (() => {
     s.c.forEach((ca, i) => { const k = g.castles[i]; k.energy = ca[0]; k.lastDrainT = ca[1]; k.max = ca[2]; k.attackT = ca[3] != null ? ca[3] : -9; });
     g.powerups = s.u.map((a) => ({ type: a[0], col: a[1], row: a[2], born: a[3] }));
     g.fx = s.f.map((a) => ({ type: a[0], c: a[1], r: a[2], owner: a[3], t: a[4], m: a[5] || 0 }));
-    g.sel = s.sel; g.time = s.time; g.winner = s.w; g.over = !!s.o; g.overT = s.ot; g.shake = s.sh; g.flash = s.fl || 0;
+    // while turn-planning, keep our own selection (the host's would leak its plan
+    // and wipe ours each snapshot); otherwise mirror the host's selection
+    if (!(g.mode === 'turn' && s.ph === 'plan')) g.sel = s.sel;
+    g.time = s.time; g.winner = s.w; g.over = !!s.o; g.overT = s.ot; g.shake = s.sh; g.flash = s.fl || 0;
+    if (s.ph !== undefined) { g.phase = s.ph; g.planT = s.pt; }
   }
 
   function send(m) {
@@ -230,7 +238,7 @@ const NET = (() => {
     // so without this the guest would render its own locally-rolled pieces until
     // the first state packet (a visible wrong-army flash)
     const pcs = g ? g.pieces.map((p) => [p.id, p.owner, p.value, p.col, p.row]) : null;
-    send({ t: 'start', b: boardIdx, m: Math.round(window.TWEAKS.castleEnergy), spd: window.TWEAKS.speed, walls: g ? Array.from(g.walls) : null, pcs });
+    send({ t: 'start', b: boardIdx, m: Math.round(window.TWEAKS.castleEnergy), spd: window.TWEAKS.speed, walls: g ? Array.from(g.walls) : null, pcs, mode: g ? g.mode : 'rts' });
   }
 
   function hostTick(g, paused, now) {
