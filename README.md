@@ -93,10 +93,22 @@ mute. Audio starts on your first tap (browser autoplay policy).
 | `game/boards.js` | Arena definitions |
 | `game/sound.js` | WebAudio chiptune SFX + menu music |
 | `manifest.webmanifest` + `sw.js` + `icons/` | PWA: install-to-home-screen + offline cache |
+| `tools/build.py` | Bumps the cache version + rebuilds the standalone bundle |
 
-When you change game files, bump the `CACHE` version string in `sw.js` (and the
-matching `?v=` query strings in `index.html`) so installed apps pick up the
-update.
+## Build / CI
+
+Just edit `game/*.js` and push — **don't bump the version by hand**. A GitHub
+Actions workflow ([.github/workflows/build.yml](.github/workflows/build.yml))
+runs `tools/build.py` on every push that touches game code, which:
+
+1. bumps the cache-busting version (the `?v=NN` query strings in `index.html`
+   and the `cortex-clash-vNN` `CACHE` name in `sw.js`) so the service worker and
+   installed PWAs pick up the change, and
+2. regenerates the single-file `cortex-clash-standalone.html` bundle from current
+   source,
+
+then commits the result back (tagged `[skip ci]`). To run it locally:
+`python3 tools/build.py`.
 
 ## License
 
