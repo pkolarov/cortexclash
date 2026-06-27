@@ -267,6 +267,43 @@ function endGame(g, winner) {
   SFX.fanfare();
 }
 
+// turn-based mid-flight combat: two opposing moving pieces that overlap (a swap
+// or a path crossing) clash where they meet — the bigger rolls on, equal values
+// annihilate. Checked per frame, so timing is respected: a piece that already
+// passed the crossing is no longer near.
+function clashMoving(g, a, b) {
+  const av = a.value, bv = b.value, big = Math.max(av, bv);
+  const pa = piecePos(a), pb = piecePos(b);
+  if (big >= 5) g.shake = Math.max(g.shake, big >= 6 ? 1.6 : 0.95);
+  g.flash = Math.min(0.55, g.flash + 0.12 + big * 0.05);
+  addFx(g, 'shock', Math.round((pa[0] + pb[0]) / 2), Math.round((pa[1] + pb[1]) / 2), a.owner, big);
+  if (av === bv) {
+    addFx(g, 'boom', Math.round(pa[0]), Math.round(pa[1]), a.owner, av);
+    addFx(g, 'boom', Math.round(pb[0]), Math.round(pb[1]), b.owner, bv);
+    removePiece(g, a); removePiece(g, b);
+  } else {
+    const l = av > bv ? b : a, pl = piecePos(l);
+    addFx(g, 'boom', Math.round(pl[0]), Math.round(pl[1]), l.owner, l.value);
+    removePiece(g, l);
+  }
+  SFX.boom(big);
+}
+
+function resolveCrossings(g) {
+  const moving = g.pieces.filter((p) => p.path);
+  for (let i = 0; i < moving.length; i++) {
+    const a = moving[i];
+    if (!a.path || !g.pieces.includes(a)) continue;
+    const pa = piecePos(a);
+    for (let j = i + 1; j < moving.length; j++) {
+      const b = moving[j];
+      if (b.owner === a.owner || !b.path || !g.pieces.includes(b)) continue;
+      const pb = piecePos(b);
+      if (Math.abs(pa[0] - pb[0]) < 0.6 && Math.abs(pa[1] - pb[1]) < 0.6) { clashMoving(g, a, b); break; }
+    }
+  }
+}
+
 function updateGame(g, dt) {
   dt *= window.TWEAKS.speed;
   for (const f of g.fx) f.t += dt;
@@ -277,9 +314,14 @@ function updateGame(g, dt) {
   g.time += dt;
 
   for (const p of [...g.pieces]) {
-    if (!p.path) continue;
-    p.prog += speedOf(g, p) * dt;
-    if (p.prog >= p.path.cells) arrive(g, p);
+    if (p.path) p.prog += speedOf(g, p) * dt;
+  }
+  // turn-based: opposing pieces that meet head-on / cross mid-flight collide
+  // where they overlap (real-time leaves combat to arrival, so two moving pieces
+  // would otherwise pass straight through each other)
+  if (g.mode === 'turn') resolveCrossings(g);
+  for (const p of [...g.pieces]) {
+    if (p.path && p.prog >= p.path.cells) arrive(g, p);
   }
 
   // castle drain — ANY parked piece drains the castle (even the owner's, so
@@ -293,7 +335,9 @@ function updateGame(g, dt) {
       }
     }
     if (drain > 0) {
-      k.energy -= drain * dt * 0.7;
+      // turn-based only camps during the brief resolve window, so drain faster
+      // there to keep sieging a viable win condition
+      k.energy -= drain * dt * 0.7 * (g.mode === 'turn' ? 3 : 1);
       k.lastDrainT = g.time;
       if (g.time % 0.5 < dt) SFX.drain();
       if (enemyDrain) {

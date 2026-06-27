@@ -206,7 +206,12 @@ window.AI = (() => {
     } else if (m.kind === 'attack') {
       const t = stationaryAt(g, m.c, m.r);
       if (!t) return -999;
+      // in turn-based, equal values annihilate — an equal attack is a 1-for-1
+      // trade, not a free kill (real-time still lets the attacker survive)
+      const trade = g.mode === 'turn' && p.value === t.value && !t.shield;
+      const cleanKill = !t.shield && p.value > t.value;
       if (t.shield) s = p.value === 1 ? 25 : 8 - p.value * 4;
+      else if (trade) s = 12 + t.value * 2;                // even trade — modest, not a kill
       else if (p.value >= t.value) s = 55 + t.value * 6;   // clean kill, we survive
       else s = p.value * 5 - 14;                           // chip damage, lose piece
       const dHome = dist(t.col, t.row, mk.col, mk.row);
@@ -216,8 +221,9 @@ window.AI = (() => {
         if (lowEnergy) s += 35;
       }
       if (t.col === mk.col && t.row === mk.row) s += 120; // sieging my castle: kill it NOW
-      // hunting the enemy's bigger pieces shrinks their offense — prize clean kills
-      if (!t.shield && p.value >= t.value) s += t.value * sk.hunt * 4;
+      // hunting the enemy's bigger pieces shrinks their offense — prize clean
+      // kills (in real-time an equal hit is also a clean kill)
+      if (cleanKill || (g.mode !== 'turn' && !t.shield && p.value === t.value)) s += t.value * sk.hunt * 4;
     } else if (m.kind === 'power') {
       const u = powerupAt(g, m.c, m.r);
       s = 45;
@@ -248,7 +254,9 @@ window.AI = (() => {
       if (sk.hunt > 0) {
         let hunt = 0;
         for (const q of g.pieces) {
-          if (q.owner === own || q.path || p.value < q.value) continue;
+          // only chase pieces we can cleanly kill; in turn-based an equal hit is
+          // a mutual trade, so don't actively hunt equals
+          if (q.owner === own || q.path || p.value < q.value || (g.mode === 'turn' && p.value === q.value)) continue;
           const closer = dist(p.col, p.row, q.col, q.row) - dist(m.c, m.r, q.col, q.row);
           if (closer > 0) hunt = Math.max(hunt, closer * (q.value + 2) * 1.6 / (1 + dist(m.c, m.r, q.col, q.row) * 0.15));
         }
