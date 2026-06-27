@@ -534,11 +534,26 @@
   // blocked orders are simply skipped), lowest id first for a stable resolution
   function applyOrders() {
     const ids = Object.keys(g.orders).map(Number).sort((a, b) => a - b);
+    // Validate every order against the pre-move board (no piece is in flight yet,
+    // so nothing is reserved), THEN commit them all. This way two pieces can be
+    // ordered to the same cell — neither cancels the other; they move and collide
+    // there. Movement + combat play out in updateGame.
+    const ready = [];
     for (const id of ids) {
       const o = g.orders[id], p = pieceById(g, id);
       if (!p || p.path) continue;
-      if (o.kind === 'split') splitMove(g, p.owner, id, o.k | 0, o.c | 0, o.r | 0);
-      else commandPieceTo(g, p.owner, id, o.c | 0, o.r | 0);
+      if (o.kind === 'split') {
+        const k = o.k | 0;
+        if (k < 1 || k >= p.value) continue;
+        const ghost = Object.assign({}, p, { value: k });
+        if (legalMoves(g, ghost).some((m) => m.c === (o.c | 0) && m.r === (o.r | 0))) ready.push({ p, kind: 'split', k, c: o.c | 0, r: o.r | 0 });
+      } else if (legalMoves(g, p).some((m) => m.c === (o.c | 0) && m.r === (o.r | 0))) {
+        ready.push({ p, kind: 'move', c: o.c | 0, r: o.r | 0 });
+      }
+    }
+    for (const v of ready) {
+      if (v.kind === 'split') splitMove(g, v.p.owner, v.p.id, v.k, v.c, v.r, true);
+      else commandMove(g, v.p, v.c, v.r);
     }
     g.orders = {};
   }

@@ -180,13 +180,22 @@ function combat(g, atk, def) {
   // floating "-N" damage number over the defender, oriented to its owner's seat
   addFx(g, 'dmg', def.col, def.row, def.owner, av);
   def.value -= av;
-  if (def.value <= 0) {
-    // kill: big value-scaled boom + shockwave + a screen flash
+  if (def.value < 0 || (def.value === 0 && g.mode !== 'turn')) {
+    // attacker outweighs the defender (equal counts as a win in real-time):
+    // defender destroyed, attacker survives
     addFx(g, 'boom', def.col, def.row, def.owner, dv);
     addFx(g, 'shock', def.col, def.row, atk.owner, av);
     g.flash = Math.min(0.55, g.flash + 0.12 + dv * 0.05);
     removePiece(g, def);
     SFX.boom(dv);
+  } else if (def.value === 0) {
+    // turn-based head-on of equal pieces: both annihilate
+    addFx(g, 'boom', def.col, def.row, def.owner, big);
+    addFx(g, 'shock', def.col, def.row, atk.owner, big);
+    g.flash = Math.min(0.55, g.flash + 0.14 + big * 0.05);
+    removePiece(g, def);
+    removePiece(g, atk);
+    SFX.boom(big);
   } else {
     // defender holds: a sharp clash spark at the defender, attacker bursts
     addFx(g, 'clash', def.col, def.row, def.owner, av);
@@ -448,18 +457,20 @@ function commandPieceTo(g, pl, pieceId, c, r) {
 // Split a fragment of size k off piece `pieceId` and send it straight to
 // (c,r). k === value moves the whole piece. Legality is judged for a value-k
 // piece standing on the parent's cell (smaller fragments reach farther).
-function splitMove(g, pl, pieceId, k, c, r) {
+// `force` skips the legality check (turn resolution pre-validates against the
+// pre-move board, so a reserved cell must not cancel an already-legal split).
+function splitMove(g, pl, pieceId, k, c, r, force) {
   const p = pieceById(g, pieceId);
   if (!p || p.owner !== pl || p.path || g.over) return false;
   k = k | 0;
   if (k < 1 || k > p.value) return false;
   if (k === p.value) {
-    if (!legalMoves(g, p).some((m) => m.c === c && m.r === r)) return false;
+    if (!force && !legalMoves(g, p).some((m) => m.c === c && m.r === r)) return false;
     commandMove(g, p, c, r);
     return true;
   }
   const ghost = Object.assign({}, p, { value: k });
-  if (!legalMoves(g, ghost).some((m) => m.c === c && m.r === r)) return false;
+  if (!force && !legalMoves(g, ghost).some((m) => m.c === c && m.r === r)) return false;
   p.value -= k;
   const frag = {
     id: g.nextId++, owner: p.owner, value: k, col: p.col, row: p.row,
