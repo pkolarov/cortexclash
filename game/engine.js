@@ -290,16 +290,19 @@ function clashMoving(g, a, b) {
 }
 
 function resolveCrossings(g) {
-  const moving = g.pieces.filter((p) => p.path);
-  for (let i = 0; i < moving.length; i++) {
-    const a = moving[i];
+  const movers = g.pieces.filter((p) => p.path);
+  for (const a of movers) {
     if (!a.path || !g.pieces.includes(a)) continue;
     const pa = piecePos(a);
-    for (let j = i + 1; j < moving.length; j++) {
-      const b = moving[j];
-      if (b.owner === a.owner || !b.path || !g.pieces.includes(b)) continue;
+    for (const b of g.pieces) {
+      if (b === a || b.owner === a.owner || !g.pieces.includes(b)) continue;
       const pb = piecePos(b);
-      if (Math.abs(pa[0] - pb[0]) < 0.6 && Math.abs(pa[1] - pb[1]) < 0.6) { clashMoving(g, a, b); break; }
+      if (Math.abs(pa[0] - pb[0]) >= 0.6 || Math.abs(pa[1] - pb[1]) >= 0.6) continue;
+      if (b.path) { clashMoving(g, a, b); break; }       // two movers cross / meet head-on
+      // a moving piece overlapping a STATIONARY enemy that stopped in its lane
+      // can't fly over it — it collides like an attack. (Its own destination is
+      // left to arrival, so the normal land-on-enemy attack still runs there.)
+      if (a.path.dest[0] !== b.col || a.path.dest[1] !== b.row) { combat(g, a, b); break; }
     }
   }
 }
@@ -335,9 +338,7 @@ function updateGame(g, dt) {
       }
     }
     if (drain > 0) {
-      // turn-based only camps during the brief resolve window, so drain faster
-      // there to keep sieging a viable win condition
-      k.energy -= drain * dt * 0.7 * (g.mode === 'turn' ? 3 : 1);
+      k.energy -= drain * dt * 0.7;
       k.lastDrainT = g.time;
       if (g.time % 0.5 < dt) SFX.drain();
       if (enemyDrain) {
