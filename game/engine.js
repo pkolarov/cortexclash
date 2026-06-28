@@ -104,11 +104,16 @@ function legalMoves(g, p) {
       if (!inBounds(c, r) || g.walls.has(cellKey(c, r))) break;
       const k = castleAt(g, c, r);
       if (k) {
-        // a piece standing on a castle can be attacked — even on YOUR castle,
-        // so defenders can fight off a sieging piece
+        // a piece on a castle can be attacked (even on YOUR castle, so defenders
+        // can fight off a sieging piece) or, if it's yours, reinforced by merging
+        // onto it — so you can pile value onto a piece already sieging/garrisoning
         const occ = stationaryAt(g, c, r);
-        if (occ && occ.owner !== p.owner) out.push({ c, r, kind: 'attack' });
-        else if (!occ) out.push({ c, r, kind: k.owner !== p.owner ? 'castle' : 'move' });
+        if (occ) {
+          if (occ.owner !== p.owner) out.push({ c, r, kind: 'attack' });
+          else if (occ.value + p.value <= MAXV) out.push({ c, r, kind: 'combine' });
+        } else {
+          out.push({ c, r, kind: k.owner !== p.owner ? 'castle' : 'move' });
+        }
         break;
       }
       const sp = stationaryAt(g, c, r);
