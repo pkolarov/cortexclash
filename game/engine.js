@@ -211,11 +211,15 @@ function combat(g, atk, def) {
   }
 }
 
+// A shield fades after this many seconds of game time (turn-based only ticks
+// game time while resolving, so there it lasts about 7 turns).
+const SHIELD_TIME = 12;
+
 function applyPower(g, p, u) {
   g.powerups = g.powerups.filter((x) => x !== u);
   if (u.type === 'charge') { p.value = Math.min(MAXV, p.value + 2); p.charged = true; }
   if (u.type === 'bolt') p.boostUntil = g.time + 8;
-  if (u.type === 'shield') p.shield = true;
+  if (u.type === 'shield') { p.shield = true; p.shieldUntil = g.time + SHIELD_TIME; }
   if (u.type === 'heart') {
     const k = g.castles[p.owner];
     k.energy = Math.min(k.max, k.energy + 12);
@@ -231,6 +235,12 @@ function arrive(g, p) {
   p.col = c;
   p.row = r;
   p.landT = g.time; // turn-based: marks a piece that landed during this resolve (not a defender)
+  // an attacker that touches down on the enemy castle spends its shield
+  const hitK = castleAt(g, c, r);
+  if (p.shield && hitK && hitK.owner !== p.owner) {
+    p.shield = false; p.shieldUntil = 0;
+    addFx(g, 'shield', c, r, p.owner, p.value);
+  }
   const sp = g.pieces.find((q) => q !== p && !q.path && q.col === c && q.row === r);
   if (sp && sp.owner === p.owner) {
     // merge up to the 6 cap; any excess isn't destroyed — it stays as the
@@ -238,14 +248,14 @@ function arrive(g, p) {
     // converging on one cell, or a target that grew while this piece flew)
     const excess = sp.value + p.value - MAXV;
     sp.value = Math.min(MAXV, sp.value + p.value);
-    sp.shield = sp.shield || p.shield;
+    if (p.shield) { sp.shieldUntil = Math.max(sp.shield ? sp.shieldUntil || 0 : 0, p.shieldUntil || 0); sp.shield = true; }
     sp.charged = sp.charged || p.charged;
     addFx(g, 'ring', c, r, sp.owner, sp.value);
     addFx(g, 'merge', c, r, sp.owner, sp.value);
     SFX.combine(sp.value);
     const spot = excess > 0 && freeNeighbour(g, c, r, p.from);
     if (spot) {
-      p.value = excess; p.shield = false; p.charged = false;
+      p.value = excess; p.shield = false; p.shieldUntil = 0; p.charged = false;
       p.col = spot[0]; p.row = spot[1];
     } else removePiece(g, p);
     return;
@@ -443,6 +453,11 @@ function updateGame(g, dt) {
 
   for (const p of [...g.pieces]) {
     if (p.path) p.prog += speedOf(g, p) * dt;
+    if (p.shield && p.shieldUntil != null && g.time >= p.shieldUntil) {
+      p.shield = false; p.shieldUntil = 0; // timed out
+      const [sc, sr] = piecePos(p);
+      addFx(g, 'shield', Math.round(sc), Math.round(sr), p.owner, p.value);
+    }
   }
   // opposing pieces that meet head-on / cross mid-flight — or a flier reaching
   // a piece that stepped into its lane after it launched — collide where they

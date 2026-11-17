@@ -227,7 +227,7 @@ const NET = (() => {
   // ---------- state sync ----------
   function pack(g) {
     const s = {
-      p: g.pieces.map((p) => [p.id, p.owner, p.value, p.col, p.row, p.path ? p.path.dest : 0, p.path ? p.path.cells : 0, p.prog, p.from, p.shield ? 1 : 0, p.boostUntil, p.charged ? 1 : 0]),
+      p: g.pieces.map((p) => [p.id, p.owner, p.value, p.col, p.row, p.path ? p.path.dest : 0, p.path ? p.path.cells : 0, p.prog, p.from, p.shield ? 1 : 0, p.boostUntil, p.charged ? 1 : 0, p.shieldUntil || 0]),
       c: g.castles.map((k) => [k.energy, k.lastDrainT, k.max, k.attackT]),
       u: g.powerups.map((u) => [u.type, u.col, u.row, u.born]),
       f: g.fx.map((f) => [f.type, f.c, f.r, f.owner, f.t, f.m || 0]),
@@ -244,7 +244,7 @@ const NET = (() => {
     g.pieces = s.p.map((a) => ({
       id: a[0], owner: a[1], value: a[2], col: a[3], row: a[4],
       path: a[5] ? { dest: a[5], cells: a[6] } : null,
-      prog: a[7], from: a[8], shield: !!a[9], boostUntil: a[10], charged: !!a[11],
+      prog: a[7], from: a[8], shield: !!a[9], boostUntil: a[10], charged: !!a[11], shieldUntil: a[12] || 0,
     }));
     s.c.forEach((ca, i) => { const k = g.castles[i]; k.energy = ca[0]; k.lastDrainT = ca[1]; k.max = ca[2]; k.attackT = ca[3] != null ? ca[3] : -9; });
     g.powerups = s.u.map((a) => ({ type: a[0], col: a[1], row: a[2], born: a[3] }));

@@ -378,13 +378,40 @@ function drawTokenBody(ctx, cx, cy, value, owner, o) {
   }
 
   if (o.shield) {
-    ctx.strokeStyle = '#e8f6ff';
-    ctx.globalAlpha = 0.8 + 0.2 * Math.sin(t * 5);
+    const R = size / 2 + 9;
+    const left = o.shieldLeft;
+    const timed = left != null;
+    const frac = timed ? Math.max(0, Math.min(1, left / 12)) : 1;
+    const urgent = timed && left < 3; // last 3 s: red and blinking
+    const blink = urgent && Math.floor(t * 6) % 2 === 0;
+    ctx.save();
+    ctx.strokeStyle = urgent ? '#ff5577' : '#e8f6ff';
+    ctx.globalAlpha = blink ? 0.35 : 0.8 + 0.2 * Math.sin(t * 5);
     ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(0, 0, size / 2 + 9, 0, Math.PI * 2);
+    ctx.beginPath(); // the ring unwinds clockwise as the shield runs out
+    ctx.arc(0, 0, R, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
     ctx.stroke();
-    ctx.globalAlpha = 1;
+    if (timed && frac < 1) { // faint track for the part already used up
+      ctx.globalAlpha = 0.18;
+      ctx.beginPath();
+      ctx.arc(0, 0, R, -Math.PI / 2 + Math.PI * 2 * frac, Math.PI * 1.5);
+      ctx.stroke();
+    }
+    if (timed) { // seconds left, in a small pill under the ring
+      const label = String(Math.max(1, Math.ceil(left)));
+      ctx.globalAlpha = blink ? 0.5 : 1;
+      ctx.fillStyle = '#10122a';
+      ctx.strokeStyle = urgent ? '#ff5577' : '#e8f6ff';
+      ctx.lineWidth = 2;
+      rr(ctx, -15, R - 9, 30, 18, 7);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = urgent ? '#ff5577' : '#e8f6ff';
+      ctx.font = '14px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, 0, R + 1);
+    }
+    ctx.restore();
   }
   if (o.boosted) {
     ctx.fillStyle = '#ffd23f';
@@ -425,7 +452,7 @@ function drawToken(ctx, g, p, t) {
 
   const bob = p.path ? 0 : Math.sin(t * 2.2 + p.id) * 2;
   drawTokenBody(ctx, cx, cy, p.value, p.owner, {
-    t, bob, sel, flip: textFlip(p.owner), charged: p.charged, shield: p.shield, boosted,
+    t, bob, sel, flip: textFlip(p.owner), charged: p.charged, shield: p.shield, shieldLeft: p.shield && p.shieldUntil ? p.shieldUntil - g.time : null, boosted,
   });
 
   if (sel) { // pulsing bracket corners (not rotated, just geometry)
@@ -1366,7 +1393,7 @@ function drawTitle(ctx, boardIdx, t, mode) {
   const legend = [
     ['charge', 'POWER +2', 'PIECE VALUE +2 · PERMANENT'],
     ['bolt', 'SPEED', '70% FASTER FOR 8 SEC'],
-    ['shield', 'SHIELD', 'BLOCKS ONE ENEMY HIT'],
+    ['shield', 'SHIELD', 'BLOCKS ONE HIT · 12s'],
     ['heart', 'REPAIR', 'YOUR CASTLE +12 ENERGY'],
   ];
   const cw = 480, ch = 60, lgx = 16, lgy = 10;
