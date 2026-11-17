@@ -2,8 +2,8 @@
 'use strict';
 const W = 1080, H = 1920;
 const CELL = 118;
-const BX = (W - COLS * CELL) / 2;   // 36
-const BY = (H - ROWS * CELL) / 2;   // 232
+const BX = (W - COLS * CELL) / 2;   // 9  (9 columns)
+const BY = (H - ROWS * CELL) / 2;   // 193 (13 rows); the HUD bands are 190 tall
 const PLAYER_COLORS = ['#19e6ff', '#ff3df0'];
 const PLAYER_DARK = ['#073039', '#380934'];
 const PLAYER_NAMES = ['PLAYER 1', 'PLAYER 2'];
@@ -586,7 +586,8 @@ function drawHud(ctx, g, pl, t, rotated) {
   ctx.fillText(String(Math.ceil(k.energy)), bx + bw + 22, by + bh / 2 + 1);
 
   // split button (only on the device that owns this side)
-  const mySide = !(window.NET && NET.active()) || pl === NET.myPlayer();
+  // (never for an AI-controlled side: its HUD is drawn unrotated, so the hit box would land on the human's SPLIT)
+  const mySide = (!(window.NET && NET.active()) || pl === NET.myPlayer()) && !(window.AI && AI.S && AI.S.ctls[pl]);
   const p = g.sel[pl] && pieceById(g, g.sel[pl]);
   if (mySide && p && p.value >= 2 && !p.path) {
     const w2 = 264, h2 = 104, x2 = W - w2 - 28, y2 = 36;
@@ -648,11 +649,10 @@ function drawIconBtn(ctx, x, y, s, kind, on) {
 // an enemy. Drawn in screen space (over the board), so it reads the same on a
 // guest's flipped view.
 function drawAttackWarning(ctx, g, t) {
-  let who = -1;
-  for (const o of myOwners()) {
-    if (g.time - g.castles[o].attackT < 0.4) { who = o; break; }
-  }
-  if (who < 0) return;
+  // every castle this screen is defending that is under attack right now (local
+  // 2P can have both at once — each player needs their own banner)
+  const hit = myOwners().filter((o) => g.time - g.castles[o].attackT < 0.4);
+  if (!hit.length) return;
   const pulse = 0.4 + 0.45 * Math.abs(Math.sin(t * 7));
   const x0 = BX - 6, y0 = BY - 6, w = COLS * CELL + 12, h = ROWS * CELL + 12;
   ctx.save();
@@ -668,14 +668,23 @@ function drawAttackWarning(ctx, g, t) {
   rr(ctx, x0, y0, w, h, 18);
   ctx.stroke();
   ctx.restore();
-  // banner near the threatened castle, oriented to its owner
-  const banY = who === 1 ? BY + 64 : BY + ROWS * CELL - 64;
-  ctx.save();
-  ctx.globalAlpha = 0.6 + 0.4 * Math.abs(Math.sin(t * 7));
-  ctx.translate(W / 2, banY);
-  if (textFlip(who)) ctx.rotate(Math.PI);
-  glowText(ctx, 'CASTLE UNDER ATTACK!', 0, 0, 22, '#ff5566', 12);
-  ctx.restore();
+  // banner at the threatened castle's SCREEN position: owner 1's castle is at the
+  // top, except on the guest's flipped view where it is at the bottom (this is
+  // drawn in screen space, so it must follow the flip or it lands at the far end)
+  const net = window.NET && NET.active();
+  const flipped = net && NET.S.view === 1;
+  for (const who of hit) {
+    const atTop = flipped ? who === 0 : who === 1;
+    const banY = atTop ? BY + 64 : BY + ROWS * CELL - 64;
+    ctx.save();
+    ctx.globalAlpha = 0.6 + 0.4 * Math.abs(Math.sin(t * 7));
+    ctx.translate(W / 2, banY);
+    // only the face-to-face seat across a shared screen reads it upside down;
+    // an online or CPU player is always the one at the bottom, reading upright
+    if (!net && textFlip(who)) ctx.rotate(Math.PI);
+    glowText(ctx, 'CASTLE UNDER ATTACK!', 0, 0, 22, '#ff5566', 12);
+    ctx.restore();
+  }
 }
 
 // ---------- screens ----------
@@ -733,15 +742,25 @@ function drawGame(ctx, g, paused, t) {
 
   if (!g.over && !paused) drawAttackWarning(ctx, g, t);
 
+  // sudden death: a deadlocked match bleeds both castles until one falls
+  if (g.suddenDeath && !g.over) {
+    ctx.save();
+    ctx.globalAlpha = 0.45 + 0.25 * Math.sin(t * 5);
+    glowText(ctx, 'SUDDEN DEATH', W / 2, H / 2, 54, '#ff5566', 22);
+    ctx.restore();
+  }
+
   if (paused && !g.over) drawOverlayMsg(ctx, 'PAUSED', '#aebcff', 'TAP ▶ TO RESUME');
 
   // pause + mute — drawn unrotated so they sit bottom-left on both devices
   if (!g.over) {
-    const s = 64;
+    // 88 logical px is ~31 CSS px on a 375px phone (64 was ~22, too small to hit);
+    // the hit boxes are padded beyond the drawn button (the 12px gap is shared)
+    const s = 88;
     drawIconBtn(ctx, 12, H - s - 12, s, 'pause', paused);
     drawIconBtn(ctx, 12, H - s * 2 - 24, s, 'mute', SFX.isMuted());
-    UI.buttons.push({ x: 12, y: H - s - 12, w: s, h: s, abs: true, action: ACTIONS.pause });
-    UI.buttons.push({ x: 12, y: H - s * 2 - 24, w: s, h: s, abs: true, action: ACTIONS.mute });
+    UI.buttons.push({ x: 0, y: H - s - 18, w: s + 24, h: s + 18, abs: true, action: ACTIONS.pause });
+    UI.buttons.push({ x: 0, y: H - s * 2 - 30, w: s + 24, h: s + 12, abs: true, action: ACTIONS.mute });
   }
 
   if (g.over) drawGameOver(ctx, g, t);
@@ -893,10 +912,38 @@ function drawSplitUI(ctx, g, t) {
   const n = p.value - 1;
   const R = 42, gap = 16;
   const rowW = n * (2 * R) + (n - 1) * gap;
-  const rowX0 = Math.max(20 + R, Math.min(W - 20 - rowW + R, cx - rowW / 2 + R));
-  // place the row between the piece and the board centre, toward the owner's seat
-  let rowY = su.pl === 1 ? cy + CELL * 1.15 : cy - CELL * 1.15;
-  rowY = Math.max(HUD_H + R + 30, Math.min(H - HUD_H - R - 30, rowY));
+  const clampX = (x) => Math.max(20 + R, Math.min(W - 20 - rowW + R, x));
+  // place the chip row so it doesn't sit on gold landing cells: a chip drawn
+  // over one swallows the tap meant to launch there (it re-picked a size). The
+  // armed size's cells must stay clear; cells of the other sizes only break
+  // ties, so the row stays put unless the armed size actually needs room.
+  const armed = [], other = [];
+  for (let k = 1; k <= n; k++) {
+    for (const m of legalMoves(g, Object.assign({}, p, { value: k }))) (k === su.k ? armed : other).push(m);
+  }
+  const toward = su.pl === 1 ? 1 : -1; // toward the board centre from the owner's seat
+  const overlaps = (x0, y, cells) => {
+    let hits = 0;
+    for (let i = 0; i < n; i++) {
+      const chx = x0 + i * (2 * R + gap);
+      for (const m of cells) {
+        const lx = px(m.c), ly = py(m.r);
+        if (chx + R > lx && chx - R < lx + CELL && y + R > ly && y - R < ly + CELL) hits++;
+      }
+    }
+    return hits;
+  };
+  let rowY = null, rowX0 = null, best = Infinity;
+  search:
+  for (const off of [1.15, -1.15, 2.3, -2.3, 3.45, -3.45, 4.6, -4.6]) {
+    const y = Math.max(HUD_H + R + 30, Math.min(H - HUD_H - R - 30, cy + toward * CELL * off));
+    for (const shift of [0, -0.5, 0.5, -1, 1, -1.5, 1.5, -2, 2]) {  // also slide sideways
+      const x0 = clampX(cx - rowW / 2 + R + shift * CELL);
+      const score = overlaps(x0, y, armed) * 1000 + overlaps(x0, y, other);
+      if (score < best) { best = score; rowY = y; rowX0 = x0; }
+      if (!score) break search;
+    }
+  }
   const col = PLAYER_COLORS[su.pl];
   for (let i = 0; i < n; i++) {
     const k = i + 1;
@@ -948,7 +995,8 @@ function drawOverlayMsg(ctx, big, color, small) {
 
 function drawGameOver(ctx, g, t) {
   const net = window.NET && NET.active();
-  const col = PLAYER_COLORS[g.winner];
+  const draw = g.winner < 0; // both sides fell on the same frame
+  const col = draw ? '#ffd23f' : PLAYER_COLORS[g.winner];
   ctx.save();
   ctx.fillStyle = 'rgba(4,4,12,' + Math.min(0.78, g.overT * 1.5) + ')';
   ctx.fillRect(0, 0, W, H);
@@ -956,7 +1004,18 @@ function drawGameOver(ctx, g, t) {
   const flick = 0.85 + 0.15 * Math.sin(t * 9);
   ctx.save();
   ctx.globalAlpha = flick;
-  if (net) {
+  if (draw) {
+    // a sudden-death draw is two level castles bleeding out together, not armies destroying each other
+    glowText(ctx, g.suddenDeath ? 'SUDDEN' : 'MUTUAL', W / 2, H / 2 - 210, 56, col, 28);
+    glowText(ctx, g.suddenDeath ? 'DEATH DRAW' : 'DESTRUCTION', W / 2, H / 2 - 120, 56, col, 28);
+    if (!net) {
+      ctx.save();
+      ctx.translate(W / 2, H / 2 + 340);
+      ctx.rotate(Math.PI);
+      glowText(ctx, 'DRAW!', 0, 0, 30, col, 16);
+      ctx.restore();
+    }
+  } else if (net) {
     const win = NET.myPlayer() === g.winner;
     glowText(ctx, win ? 'YOU' : PLAYER_NAMES[g.winner], W / 2, H / 2 - 210, 56, col, 28);
     glowText(ctx, win ? 'WIN!' : 'WINS!', W / 2, H / 2 - 120, 56, col, 28);
@@ -1030,16 +1089,50 @@ function drawTurnHud(ctx, g, t) {
     }
     ctx.restore();
   }
-  // screen-space UI, upright on both devices
+  // screen-space UI. Local 2P gets a full copy for the top player, rotated to
+  // face them (their own countdown, order count and GO — one shared GO used to
+  // resolve both plans the moment the bottom player was done)
+  const seats = isLocal2P() ? [0, 1] : [null];
+  for (const seat of seats) {
+    ctx.save();
+    if (seat === 1) { ctx.translate(W, H); ctx.rotate(Math.PI); }
+    drawTurnSeat(ctx, g, t, seat, mine);
+    ctx.restore();
+  }
+}
+
+// one player's planning HUD, drawn upright for the bottom of the screen.
+// seat: 0/1 in local 2P, null when this device has a single seat.
+function drawTurnSeat(ctx, g, t, seat, mine) {
   if (g.phase === 'resolve') { glowText(ctx, 'RESOLVING…', W / 2, 160, 28, '#ffd23f', 12); return; }
   const secs = Math.max(0, Math.ceil(g.planT)), warn = secs <= 5;
   glowText(ctx, 'PLAN  ' + secs + 's', W / 2, 160, 32, warn ? '#ff5566' : '#19e6ff', warn ? 16 : 8);
+  const owners = seat == null ? mine : [seat];
   let n = 0;
-  for (const id in g.orders) { const p = pieceById(g, +id); if (p && mine.indexOf(p.owner) >= 0) n++; }
-  glowText(ctx, n + ' ORDER' + (n === 1 ? '' : 'S') + ' QUEUED', W / 2, 198, 14, 'rgba(232,246,255,0.6)', 4);
+  for (const id in g.orders) { const p = pieceById(g, +id); if (p && owners.indexOf(p.owner) >= 0) n++; }
+  // whose plan is in: my GO, and (online / local 2P / vs an LLM) the other side's
+  const me = seat != null ? seat : (window.NET && NET.active() ? NET.myPlayer() : 0);
+  const other = 1 - me;
+  const ready = g.ready || [false, false];
+  const online = window.NET && NET.active();
+  let line = n + ' ORDER' + (n === 1 ? '' : 'S') + ' QUEUED', lineCol = 'rgba(232,246,255,0.6)';
+  if (ready[me]) {
+    let wait = '';
+    if (online || seat != null) wait = ready[other] ? '' : 'WAITING FOR ' + (online ? 'OPPONENT' : PLAYER_NAMES[other]) + '…';
+    else if (window.AI && !AI.turnReady()) wait = 'WAITING FOR ' + PLAYER_NAMES[1] + '…';
+    if (wait) { line = wait; lineCol = '#ffd23f'; }
+  } else if ((online || seat != null) && ready[other]) {
+    line += ' · ' + (online ? 'OPPONENT' : PLAYER_NAMES[other]) + ' READY'; lineCol = '#ffd23f';
+  }
+  glowText(ctx, line, W / 2, 198, 14, lineCol, 4);
+  if (window.AI && AI.S.watch) return; // spectating AI vs AI: nobody here to press GO
   const bw = 320, bh = 70, bx = W / 2 - bw / 2, by = H - 80;
+  if (ready[me]) { drawBigBtn(ctx, bx, by, bw, bh, '✓ READY', '#52ff9d', t, true, 26); return; }
   drawBigBtn(ctx, bx, by, bw, bh, '▶ GO', '#52ff9d', t, false, 30);
-  UI.buttons.push({ x: bx, y: by, w: bw, h: bh, abs: true, action: ACTIONS.go });
+  const act = () => ACTIONS.go(me);
+  // the top seat is drawn rotated 180°, so its hit box is the mirrored rect
+  if (seat === 1) UI.buttons.push({ x: W - bx - bw, y: H - by - bh, w: bw, h: bh, abs: true, action: act });
+  else UI.buttons.push({ x: bx, y: by, w: bw, h: bh, abs: true, action: act });
 }
 
 // ---------- title ----------

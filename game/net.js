@@ -8,6 +8,7 @@ const NET = (() => {
   let soundQ = [];
   let lastSent = 0;
   let hbTimer = null, lastRecvAt = 0; // heartbeat: detect a peer that vanished
+
   let H = {};
 
   const S = {
@@ -18,6 +19,7 @@ const NET = (() => {
     copyMsg: '',
     connected: false,
     hostSpeed: 1,
+    peerAway: false,  // the peer told us it went to the background (the host pauses the match)
   };
 
   const active = () => S.mode !== 'off';
@@ -93,6 +95,12 @@ const NET = (() => {
       if (document.visibilityState === 'visible' && active()) {
         lastRecvAt = Date.now();
         tryReconnect();
+        send({ t: 'back' }); // clears the opponent's "away" pause right away
+      } else if (document.visibilityState === 'hidden' && active()) {
+        // tell the opponent we're backgrounded (app switch, share sheet, lock
+        // screen) — a phone suspends our heartbeat, and without this they'd call
+        // us gone after 12s and end the match
+        send({ t: 'away' });
       }
     });
   }
@@ -103,11 +111,17 @@ const NET = (() => {
     S.status = netErrText(e);
   }
 
-  function onRemoteClosed() {
-    if (!conn) return;
+  // `from` is the connection that reported the close. A connection we already
+  // dropped (heartbeat silence) can still fire a late close/bye — it must not
+  // tear down the NEW guest's link, so ignore anything that isn't the live one.
+  function onRemoteClosed(from) {
+    if (!conn || (from && from !== conn)) return;
     stopHeartbeat();
+    const old = conn;
     conn = null;
+    try { old.close(); } catch (e) {} // a dropped link must not keep delivering input
     S.connected = false;
+    S.peerAway = false;
     soundQ = [];
     if (S.mode === 'host') S.status = 'WAITING FOR PLAYER 2'; // lobby can re-arm
     // NOTE: must NOT start with 'CONNECT' — the join screen colors any
@@ -132,9 +146,9 @@ const NET = (() => {
         startHeartbeat();
         if (H.onPeerJoined) H.onPeerJoined();
       });
-      c.on('data', onHostData);
-      c.on('close', onRemoteClosed);
-      c.on('error', onRemoteClosed);
+      c.on('data', (m) => { if (c === conn) onHostData(m, c); });
+      c.on('close', () => onRemoteClosed(c));
+      c.on('error', () => onRemoteClosed(c));
     });
     peer.on('disconnected', tryReconnect);
     peer.on('error', (e) => onPeerError(e, { 'unavailable-id': 'CODE CLASH — TAP CANCEL, RETRY' }));
@@ -148,11 +162,12 @@ const NET = (() => {
     peer = new Peer({ debug: 0 });
     peer.on('open', () => {
       if (conn) return; // a reconnect to the broker — keep the existing data link
-      conn = peer.connect(PREFIX + code, { reliable: true });
-      conn.on('open', () => { S.connected = true; S.status = 'CONNECTED — STARTING…'; startHeartbeat(); });
-      conn.on('data', onGuestData);
-      conn.on('close', onRemoteClosed);
-      conn.on('error', onRemoteClosed);
+      const c = peer.connect(PREFIX + code, { reliable: true });
+      conn = c;
+      c.on('open', () => { S.connected = true; S.status = 'CONNECTED — STARTING…'; startHeartbeat(); });
+      c.on('data', (m) => { if (c === conn) onGuestData(m, c); });
+      c.on('close', () => onRemoteClosed(c));
+      c.on('error', () => onRemoteClosed(c));
     });
     peer.on('disconnected', tryReconnect);
     peer.on('error', (e) => onPeerError(e, { 'peer-unavailable': 'GAME NOT FOUND — CHECK CODE' }));
@@ -166,27 +181,38 @@ const NET = (() => {
   function startHeartbeat() {
     stopHeartbeat();
     lastRecvAt = Date.now();
+    S.peerAway = false;
     hbTimer = setInterval(() => {
       if (!conn || !S.connected) return;
       try { conn.send({ t: 'ping' }); } catch (e) {}
       if (typeof document !== 'undefined' && document.hidden) return;
-      if (Date.now() - lastRecvAt > 12000) onRemoteClosed();
+      // an opponent that announced it went to the background gets a long grace
+      // window (its phone has paused its timers); any message from it clears that
+      if (Date.now() - lastRecvAt > (S.peerAway ? 120000 : 12000)) onRemoteClosed();
     }, 1500);
   }
   function stopHeartbeat() { if (hbTimer) { clearInterval(hbTimer); hbTimer = null; } }
 
-  function onHostData(m) {
+  function onHostData(m, from) {
     if (!m || typeof m !== 'object') return;
     lastRecvAt = Date.now();
-    if (m.t === 'bye') { onRemoteClosed(); return; }
+    // 'away' = they backgrounded the app. A backgrounded tab can keep pinging
+    // (throttled timers), so only a real message or their 'back' clears it
+    if (m.t === 'away') { S.peerAway = true; return; }
+    if (m.t !== 'ping') S.peerAway = false;
+    if (m.t === 'bye') { onRemoteClosed(from); return; }
     if (m.t === 'ping') return;
     if (H.onGuestInput) H.onGuestInput(m);
   }
 
-  function onGuestData(m) {
+  function onGuestData(m, from) {
     if (!m || typeof m !== 'object') return;
     lastRecvAt = Date.now();
-    if (m.t === 'bye') { onRemoteClosed(); return; }
+    // 'away' = they backgrounded the app. A backgrounded tab can keep pinging
+    // (throttled timers), so only a real message or their 'back' clears it
+    if (m.t === 'away') { S.peerAway = true; return; }
+    if (m.t !== 'ping') S.peerAway = false;
+    if (m.t === 'bye') { onRemoteClosed(from); return; }
     if (m.t === 'ping') return;
     if (m.t === 'start' && H.onGuestStart) {
       S.hostSpeed = m.spd || 1;
@@ -209,7 +235,8 @@ const NET = (() => {
     };
     // turn-based: mirror the host's phase + planning clock so the guest's
     // countdown and plan/resolve UI stay in lockstep with the authority
-    if (g.mode === 'turn') { s.ph = g.phase; s.pt = g.planT; }
+    if (g.mode === 'turn') { s.ph = g.phase; s.pt = g.planT; s.rd = g.ready; s.tn = g.turnNo; }
+    if (g.suddenDeath) s.sd = 1;
     return s;
   }
 
@@ -226,7 +253,8 @@ const NET = (() => {
     // and wipe ours each snapshot); otherwise mirror the host's selection
     if (!(g.mode === 'turn' && s.ph === 'plan')) g.sel = s.sel;
     g.time = s.time; g.winner = s.w; g.over = !!s.o; g.overT = s.ot; g.shake = s.sh; g.flash = s.fl || 0;
-    if (s.ph !== undefined) { g.phase = s.ph; g.planT = s.pt; }
+    if (s.ph !== undefined) { g.phase = s.ph; g.planT = s.pt; g.turnNo = s.tn; if (s.rd) g.ready = [!!s.rd[0], !!s.rd[1]]; }
+    g.suddenDeath = !!s.sd;
   }
 
   function send(m) {

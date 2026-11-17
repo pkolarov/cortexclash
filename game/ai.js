@@ -23,9 +23,9 @@ window.AI = (() => {
     { id: 'cpu-hard', label: 'CPU · HARD', name: 'CPU HARD', kind: 'bot', diff: 'hard' },
     { id: 'cpu-veryhard', label: 'CPU · VERY HARD', name: 'V.HARD', kind: 'bot', diff: 'veryhard' },
     { id: 'cpu-inhuman', label: 'CPU · INHUMAN', name: 'INHUMAN', kind: 'bot', diff: 'inhuman' },
-    { id: 'claude-opus', label: 'CLAUDE OPUS 4.8', name: 'OPUS', kind: 'llm', provider: 'anthropic', model: 'claude-opus-4-8' },
-    { id: 'claude-sonnet', label: 'CLAUDE SONNET 4.6', name: 'SONNET', kind: 'llm', provider: 'anthropic', model: 'claude-sonnet-4-6' },
-    { id: 'claude-haiku', label: 'CLAUDE HAIKU 4.5', name: 'HAIKU', kind: 'llm', provider: 'anthropic', model: 'claude-haiku-4-5' },
+    { id: 'claude-opus', label: 'CLAUDE OPUS 5.5', name: 'OPUS', kind: 'llm', provider: 'anthropic', model: 'claude-opus-5-5', fallbacks: true },
+    { id: 'claude-sonnet', label: 'CLAUDE SONNET 5.5', name: 'SONNET', kind: 'llm', provider: 'anthropic', model: 'claude-sonnet-5-5', fallbacks: true },
+    { id: 'claude-haiku', label: 'CLAUDE HAIKU 5.5', name: 'HAIKU', kind: 'llm', provider: 'anthropic', model: 'claude-haiku-5-5' },
     { id: 'gpt-55', label: 'GPT-5.5', name: 'GPT-5.5', kind: 'llm', provider: 'openai', model: 'gpt-5.5' },
     { id: 'gpt-54-mini', label: 'GPT-5.4 MINI', name: 'GPT MINI', kind: 'llm', provider: 'openai', model: 'gpt-5.4-mini' },
     { id: 'gemini-35-flash', label: 'GEMINI 3.5 FLASH', name: 'GEMINI', kind: 'llm', provider: 'gemini', model: 'gemini-3.5-flash' },
@@ -42,13 +42,22 @@ window.AI = (() => {
   // ctls[owner] drives that side; null = human
   const S = { ctls: [null, null], watch: false, gen: 0 };
 
+  // storage can throw (private mode, blocked site data, quota): keep the key in
+  // memory for this session instead of failing the whole opponent
+  const memKeys = {};
+  const ls = {
+    get(k) { try { const v = localStorage.getItem(k); if (v != null) return v; } catch (e) {} return memKeys[k] || null; },
+    set(k, v) { memKeys[k] = v; try { localStorage.setItem(k, v); } catch (e) {} },
+    del(k) { delete memKeys[k]; try { localStorage.removeItem(k); } catch (e) {} },
+  };
+
   function byId(id) { return ROSTER.find((r) => r.id === id) || null; }
 
   function makeCtl(spec, own) {
     return {
       spec, origSpec: spec, own,
       timer: spec.kind === 'llm' ? 0.8 : 1.2,
-      busy: false, pending: null, errs: 0,
+      busy: false, pending: null, errs: 0, planned: false, turnTok: 0,
       status: '', taunt: '', tauntT: 0,
     };
   }
@@ -77,7 +86,14 @@ window.AI = (() => {
     S.gen++;
     // restore the originally chosen opponent — if an LLM fell back to the CPU
     // mid-match, a rematch should give it another shot
-    S.ctls = S.ctls.map((c) => c && makeCtl(c.origSpec, c.own));
+    S.ctls = S.ctls.map((c) => {
+      if (!c) return c;
+      const n = makeCtl(c.origSpec, c.own);
+      // a rejected key was deleted when it failed: ask for it again (declining
+      // just means the CPU stands in, with an honest message)
+      if (n.spec.kind === 'llm' && !ensureKeys([n.spec.id])) fallbackToBot(n, 'NO API KEY - CPU TOOK OVER');
+      return n;
+    });
     for (const c of S.ctls) if (c) PLAYER_NAMES[c.own] = c.spec.name;
   }
 
@@ -97,10 +113,10 @@ window.AI = (() => {
       const spec = byId(id);
       if (!spec || spec.kind !== 'llm') continue;
       const prov = PROVIDERS[spec.provider];
-      if (localStorage.getItem(prov.keyName)) continue;
+      if (ls.get(prov.keyName)) continue;
       const key = (window.prompt('Paste your ' + prov.keyHint + '\nIt is stored only on this device.') || '').trim();
       if (!key) return false;
-      localStorage.setItem(prov.keyName, key);
+      ls.set(prov.keyName, key);
     }
     return true;
   }
@@ -195,10 +211,13 @@ window.AI = (() => {
     const lowEnergy = mk.energy < mk.max * 0.55;
     // a piece sitting on the enemy castle pays 1 value to leave; a value-1
     // camper would die, so never order it off — let it keep draining
+    let campPenalty = 0;
     if (ek.col === p.col && ek.row === p.row) {
       if (p.value <= 1) return -999;
-      // mildly discourage abandoning a live siege when the castle isn't dead yet
-      if (ek.energy > 0) return -40 + p.value;
+      // abandoning a live siege costs value and drain, so it needs a clearly
+      // strong reason (a clean kill on a defender). This used to be a flat
+      // -40 + value, which no move could ever beat: campers never fought back
+      if (ek.energy > 0) campPenalty = 45 - p.value;
     }
     let s;
     if (m.kind === 'castle') {
@@ -244,7 +263,7 @@ window.AI = (() => {
       // the enemy's strongest guard when neither half could alone — the key to
       // cracking a turtled castle.
       if (enemyMax >= 4 && result >= enemyMax && p.value < enemyMax && mate.value < enemyMax) s += 55 * sk.combine;
-      return s;
+      return s - campPenalty;
     } else {
       // plain move: advance toward the enemy castle, fast pieces lead the push
       s = (dist(p.col, p.row, ek.col, ek.row) - dist(m.c, m.r, ek.col, ek.row)) * (7 - p.value) * 2.2;
@@ -292,7 +311,7 @@ window.AI = (() => {
         if (gain > 0 && dist(m.c, m.r, mk.col, mk.row) === 1) s += 18;
       }
     }
-    return s - dangerPenalty(g, own, p, m, sk.safety);
+    return s - campPenalty - dangerPenalty(g, own, p, m, sk.safety);
   }
 
   // Strategic split: peel a fast, low-value fragment off a big (value>=4)
@@ -300,11 +319,19 @@ window.AI = (() => {
   // a powerup, or make a favorable attack — while the parent keeps fighting.
   // Uses the same scoreMove the bot uses for normal moves, so the fragment goes
   // where it does the most damage. Returns true if it split.
+  // best score the piece could get by moving as a whole (what a split gives up)
+  function bestWhole(g, own, p, threats, sk) {
+    let b = -Infinity;
+    for (const m of legalMoves(g, p)) { const v = scoreMove(g, own, p, m, threats, sk); if (v > b) b = v; }
+    return b;
+  }
+
   function botSplit(g, own, threats, sk) {
     if (g.pieces.filter((p) => p.owner === own).length >= 10) return false; // don't shred the army
     let best = null, bestScore = 35; // only split when the fragment move is clearly worth it
     for (const p of g.pieces) {
       if (p.owner !== own || p.path || p.value < 3) continue;
+      const whole = bestWhole(g, own, p, threats, sk); // don't trade a clean whole-piece move for a chip split
       // a value-1/2 fragment is a fast scout/rusher; a value-3 fragment is a real
       // attacker that can clean-kill mid pieces while the parent keeps fighting
       for (const k of [1, 2, 3]) {
@@ -312,7 +339,7 @@ window.AI = (() => {
         const ghost = Object.assign({}, p, { value: k });
         for (const m of legalMoves(g, ghost)) {
           const s = scoreMove(g, own, ghost, m, threats, sk);
-          if (s > bestScore) { bestScore = s; best = { id: p.id, k, c: m.c, r: m.r }; }
+          if (s > bestScore && s > whole) { bestScore = s; best = { id: p.id, k, c: m.c, r: m.r }; }
         }
       }
     }
@@ -352,13 +379,14 @@ window.AI = (() => {
       let best = null, bestScore = 35;
       for (const p of g.pieces) {
         if (p.owner !== own || p.path || p.value < 3) continue;
+        const whole = bestWhole(g, own, p, threats, sk);
         for (const k of [1, 2, 3]) {
           if (k >= p.value) continue;
           const ghost = Object.assign({}, p, { value: k });
           for (const m of legalMoves(g, ghost)) {
             if (!free(m.c, m.r)) continue;
             const s = scoreMove(g, own, ghost, m, threats, sk);
-            if (s > bestScore) { bestScore = s; best = { id: p.id, k, c: m.c, r: m.r }; }
+            if (s > bestScore && s > whole) { bestScore = s; best = { id: p.id, k, c: m.c, r: m.r }; }
           }
         }
       }
@@ -366,11 +394,16 @@ window.AI = (() => {
     }
     // one move per remaining idle piece, heaviest first so slow rams claim lanes
     const mine = g.pieces.filter((p) => p.owner === own && !p.path && !skip.has(p.id)).sort((a, b) => b.value - a.value);
+    const mk = g.castles[own];
     for (const p of mine) {
+      const leaveBonus = (p.col === mk.col && p.row === mk.row) ? 130 : 0; // own castle drains it (as botBestMove)
+      // the tier's hesitation + sloppiness, as in real-time (botAct / botBestMove):
+      // without them every tier planned flawlessly and EASY wasn't easy
+      if (!leaveBonus && Math.random() < (d.skip || 0)) continue;
       let best = null, bestScore = 0;
       for (const m of legalMoves(g, p)) {
         if (!free(m.c, m.r)) continue;
-        const s = scoreMove(g, own, p, m, threats, sk);
+        const s = scoreMove(g, own, p, m, threats, sk) + leaveBonus + Math.random() * (d.noise || 0);
         if (s > bestScore) { bestScore = s; best = m; }
       }
       if (best) { orders.push({ id: p.id, kind: 'move', c: best.c, r: best.r }); take(best.c, best.r); }
@@ -378,9 +411,20 @@ window.AI = (() => {
     return orders;
   }
 
-  // start of a turn-based planning phase: let LLM sides re-request once, drop stale plans
+  // start of a turn-based planning phase: let LLM sides re-request once, drop stale
+  // plans. A request still in flight from last turn is left to finish (busy stays
+  // set so it isn't doubled) and its answer is discarded via turnTok.
   function newTurn(g) {
-    for (const ctl of S.ctls) if (ctl && ctl.spec.kind === 'llm') { ctl.pending = null; ctl.busy = false; ctl.timer = 0.4; }
+    for (const ctl of S.ctls) {
+      if (!ctl || ctl.spec.kind !== 'llm') continue;
+      ctl.pending = null; ctl.planned = false; ctl.turnTok++; ctl.timer = 0.4;
+    }
+  }
+
+  // turn-based: has every AI side committed its plan for this turn? Bots plan at
+  // resolve time, so only LLM sides can still be pending.
+  function turnReady() {
+    return S.ctls.every((c) => !c || c.spec.kind !== 'llm' || c.planned);
   }
 
   function botAct(g, ctl) {
@@ -402,7 +446,8 @@ window.AI = (() => {
   }
 
   // ---------- LLM opponents ----------
-  function sysFor(own) {
+  function sysFor(own, mode) {
+    const turn = mode === 'turn';
     const side = own === 1 ? 'the TOP side (magenta)' : 'the BOTTOM side (cyan)';
     const myC = own === 1 ? '(4,1)' : '(4,11)';
     const enC = own === 1 ? '(4,11)' : '(4,1)';
@@ -414,8 +459,12 @@ window.AI = (() => {
       'Pieces have a value 1-6. Value = attack damage and merge weight. Move range = 7 - value cells in a straight or diagonal line (blocked by walls and pieces). Low values are fast and long-ranged; high values are slow but hit hard.',
       'Landing on an enemy deals your value as damage; if the defender survives, your piece dies. Landing on your own piece merges values (max 6). Powerups: charge (+2 value), bolt (speed boost 8s), shield (blocks one hit), heart (+12 castle energy).',
       'Leaving an enemy castle cell costs 1 value (a piece at value 1 dies instead of leaving) - camping the enemy castle is a commitment. If one of your pieces ends up standing on YOUR OWN castle, move it off immediately; it has no exit penalty but it drains your castle every second it stays.',
-      'Each turn you get the board state plus the exact legal destinations for each of your idle pieces. Choose up to 3 moves, strictly from the listed legal destinations. Optionally split one piece (value >= 2 splits half into an adjacent cell; use 0 for no split). Include a short retro-arcade taunt (max 40 chars).',
-      'Strategy: rush and camp the enemy castle, intercept attackers near your castle, grab powerups, take favorable trades. Be aggressive - passivity loses. The game keeps running while you think, so commit to strong moves.',
+      turn
+        ? 'This match is TURN-BASED: every turn both sides plan at once and all orders play out together, and the game waits for you. You get the board state plus the exact legal destinations for each of your idle pieces. Give an order to as many idle pieces as is useful (up to 8), strictly from the listed legal destinations. Optionally split one piece (value >= 2 splits half into an adjacent cell; use 0 for no split). Include a short retro-arcade taunt (max 40 chars).'
+        : 'Each turn you get the board state plus the exact legal destinations for each of your idle pieces. Choose up to 3 moves, strictly from the listed legal destinations. Optionally split one piece (value >= 2 splits half into an adjacent cell; use 0 for no split). Include a short retro-arcade taunt (max 40 chars).',
+      turn
+        ? 'Strategy: rush and camp the enemy castle, intercept attackers near your castle, grab powerups, take favorable trades. Remember the enemy moves at the same time as you, so do not step into a square it can reach first. Be aggressive - passivity loses.'
+        : 'Strategy: rush and camp the enemy castle, intercept attackers near your castle, grab powerups, take favorable trades. Be aggressive - passivity loses. The game keeps running while you think, so commit to strong moves.',
     ].join('\n');
   }
 
@@ -483,11 +532,23 @@ window.AI = (() => {
 
   function authErr(msg) { const e = new Error(msg); e.auth = true; return e; }
 
-  // a 12s abort guard so a hung fetch can't leave the AI side inert forever
+  // a 25s abort guard so a hung fetch can't leave the AI side inert forever
+  // (thinking models need longer than the old 12s; a turn's plan window is 30s)
+  // The guard stays armed until the whole body has been read: a server that
+  // sends headers and then stalls used to leave the seat "thinking" forever.
   async function postJSON(url, opts) {
     const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 12000);
-    try { return await fetch(url, Object.assign({ signal: ctrl.signal }, opts)); }
+    let to = 0;
+    // rejects when the guard fires even if the fetch implementation never
+    // honours the abort for a half-read body
+    const timedOut = new Promise((_, rej) => { to = setTimeout(() => { ctrl.abort(); rej(new Error('timeout')); }, 25000); });
+    const work = (async () => {
+      const res = await fetch(url, Object.assign({ signal: ctrl.signal }, opts));
+      if (!res.ok) throw await classifyError(res);
+      return await res.json();
+    })();
+    work.catch(() => {}); // avoid an unhandled rejection if the timeout wins the race
+    try { return await Promise.race([work, timedOut]); }
     finally { clearTimeout(to); }
   }
 
@@ -496,8 +557,10 @@ window.AI = (() => {
   async function classifyError(res) {
     let body = '';
     try { body = await res.text(); } catch (e) {}
-    if (res.status === 401 || res.status === 403) return authErr('' + res.status);
-    if (/api[\s_-]?key|invalid.?key|API_KEY_INVALID|unauthor|permission.?denied/i.test(body)) {
+    // a 5xx / 429 never means the key is bad, whatever the body says; a 403 can
+    // be a region or plan block, so it only counts when the body is about the key
+    if (res.status === 401) return authErr('401');
+    if ((res.status === 400 || res.status === 403) && /api[\s_-]?key|invalid.?key|API_KEY_INVALID/i.test(body)) {
       return authErr('bad key (' + res.status + ')');
     }
     return new Error('HTTP ' + res.status);
@@ -506,34 +569,37 @@ window.AI = (() => {
   // returns the parsed {moves, split, taunt} object, or throws.
   // a thrown error with .auth = true means a bad/expired key.
   async function llmRequest(spec, sys, user) {
-    const key = localStorage.getItem(PROVIDERS[spec.provider].keyName);
+    const key = ls.get(PROVIDERS[spec.provider].keyName);
     if (!key) throw authErr('no key');
 
     if (spec.provider === 'anthropic') {
-      const res = await postJSON('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': key,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: spec.model,
-          max_tokens: 1024,
-          system: sys,
-          output_config: { format: { type: 'json_schema', schema: SCHEMA } },
-          messages: [{ role: 'user', content: user }],
-        }),
-      });
-      if (!res.ok) throw await classifyError(res);
-      const msg = await res.json();
+      const headers = {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      };
+      // the 5.5 models always think, and thinking spends from max_tokens — leave
+      // room for it (1024 could leave no JSON at all). Low effort keeps replies
+      // quick for a live match.
+      const body = {
+        model: spec.model,
+        max_tokens: 16000,
+        system: sys,
+        output_config: { effort: 'low', format: { type: 'json_schema', schema: SCHEMA } },
+        messages: [{ role: 'user', content: user }],
+      };
+      // a safety-classifier refusal is re-run server-side on a fallback model
+      // instead of costing the turn (not offered for Haiku)
+      if (spec.fallbacks) { headers['anthropic-beta'] = 'server-side-fallback-2026-07-01'; body.fallbacks = 'default'; }
+      const msg = await postJSON('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) });
+      if (msg.stop_reason === 'refusal') throw new Error('refused');
       const text = (msg.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
       return JSON.parse(text);
     }
 
     if (spec.provider === 'openai') {
-      const res = await postJSON('https://api.openai.com/v1/chat/completions', {
+      const msg = await postJSON('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
         body: JSON.stringify({
@@ -550,13 +616,13 @@ window.AI = (() => {
           },
         }),
       });
-      if (!res.ok) throw await classifyError(res);
-      const msg = await res.json();
-      return JSON.parse(msg.choices[0].message.content);
+      const m = msg.choices[0].message;
+      if (m.refusal || m.content == null) throw new Error('refused'); // a refusal is a failed turn, not an answer
+      return JSON.parse(m.content);
     }
 
     if (spec.provider === 'gemini') {
-      const res = await postJSON('https://generativelanguage.googleapis.com/v1beta/models/' +
+      const msg = await postJSON('https://generativelanguage.googleapis.com/v1beta/models/' +
         spec.model + ':generateContent?key=' + encodeURIComponent(key), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -570,8 +636,6 @@ window.AI = (() => {
           },
         }),
       });
-      if (!res.ok) throw await classifyError(res);
-      const msg = await res.json();
       return JSON.parse(msg.candidates[0].content.parts[0].text);
     }
     throw new Error('unknown provider');
@@ -584,20 +648,32 @@ window.AI = (() => {
     if (a.taunt) { ctl.taunt = String(a.taunt).slice(0, 48).toUpperCase(); ctl.tauntT = 6; }
     // turn-based: don't move now — queue orders that fire when the turn resolves
     const turn = g.mode === 'turn';
-    for (const mv of (a.moves || []).slice(0, turn ? 8 : 3)) {
+    // the cap counts moves that were actually applied, so invalid entries can't
+    // use it up; and when the board moved on while the model was thinking, say so
+    // in the next prompt instead of dropping its orders silently
+    const cap = turn ? 8 : 3;
+    let applied = 0, stale = 0;
+    for (const mv of (a.moves || [])) {
+      if (applied >= cap) break;
       const p = pieceById(g, mv.piece | 0);
-      if (!p || p.owner !== ctl.own || p.path) continue;
-      if (!legalMoves(g, p).some((m) => m.c === mv.c && m.r === mv.r)) continue;
+      if (!p || p.owner !== ctl.own || p.path) { stale++; continue; }
+      if (!legalMoves(g, p).some((m) => m.c === mv.c && m.r === mv.r)) { stale++; continue; }
       if (turn) g.orders[p.id] = { id: p.id, kind: 'move', c: mv.c | 0, r: mv.r | 0 };
       else commandMove(g, p, mv.c | 0, mv.r | 0);
+      applied++;
       ctl.errs = 0;
     }
+    ctl.note = stale && !turn
+      ? 'NOTE: ' + stale + ' of your last orders were dropped because the board changed while you were thinking. Use only the legal destinations listed below.'
+      : '';
+    if (stale && !turn && !applied) ctl.timer = 0.2; // nothing landed: re-plan right away
     if (a.split) {
       const p = pieceById(g, a.split | 0);
       if (p && p.owner === ctl.own && !p.path && p.value >= 2) {
         if (turn) {
           const k = Math.floor(p.value / 2), ghost = Object.assign({}, p, { value: k });
-          const adj = k >= 1 && legalMoves(g, ghost).find((m) => Math.max(Math.abs(m.c - p.col), Math.abs(m.r - p.row)) === 1);
+          const ck = castleAt(g, p.col, p.row), camping = ck && ck.owner !== ctl.own;
+          const adj = k >= (camping ? 2 : 1) && legalMoves(g, ghost).find((m) => Math.max(Math.abs(m.c - p.col), Math.abs(m.r - p.row)) === 1);
           if (adj) g.orders[p.id] = { id: p.id, kind: 'split', k, c: adj.c, r: adj.r };
         } else {
           const prev = g.sel[ctl.own];
@@ -607,7 +683,7 @@ window.AI = (() => {
         }
       }
     }
-    if (turn) ctl.timer = 999; // one plan per turn; AI.newTurn re-arms it next turn
+    if (turn) { ctl.timer = 999; ctl.planned = true; } // one plan per turn; AI.newTurn re-arms it next turn
   }
 
   function fallbackToBot(ctl, msg) {
@@ -621,20 +697,24 @@ window.AI = (() => {
 
   async function llmCall(g, ctl) {
     const d = describe(g, ctl.own);
-    if (!d.hasMoves) { ctl.timer = 0.6; return; }
+    if (!d.hasMoves) { ctl.timer = 0.6; if (g.mode === 'turn') ctl.planned = true; return; }
     ctl.busy = true;
     ctl.status = ctl.spec.name + ' THINKING…';
-    const gen = S.gen;
+    const gen = S.gen, tok = ctl.turnTok;
     try {
-      const out = await llmRequest(ctl.spec, sysFor(ctl.own), d.text);
+      const out = await llmRequest(ctl.spec, sysFor(ctl.own, g.mode), d.text + (ctl.note ? '\n' + ctl.note : ''));
+      ctl.note = '';
+      if (!out || typeof out !== 'object' || !Array.isArray(out.moves)) throw new Error('empty reply');
       if (gen !== S.gen) return;
+      ctl.errs = 0; // a good answer ends any error streak (only consecutive failures hand over to the CPU)
+      if (tok !== ctl.turnTok) { ctl.status = ''; return; } // answered a turn that already resolved
       ctl.pending = out;
       ctl.status = '';
       ctl.timer = 1.0;
     } catch (e) {
       if (gen !== S.gen) return;
       if (e.auth) {
-        localStorage.removeItem(PROVIDERS[ctl.spec.provider].keyName);
+        ls.del(PROVIDERS[ctl.spec.provider].keyName);
         fallbackToBot(ctl, 'BAD API KEY - CPU TOOK OVER');
         return;
       }
@@ -686,6 +766,6 @@ window.AI = (() => {
   return {
     S, ROSTER, CLAUDE_IDS, DIFF_IDS,
     startSingle, startWatch, restart, stop, active, ensureKeys,
-    tick, drawHud, byId, planTurn, newTurn,
+    tick, drawHud, byId, planTurn, newTurn, turnReady,
   };
 })();

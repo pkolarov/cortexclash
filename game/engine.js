@@ -230,21 +230,56 @@ function arrive(g, p) {
   p.prog = 0;
   p.col = c;
   p.row = r;
+  p.landT = g.time; // turn-based: marks a piece that landed during this resolve (not a defender)
   const sp = g.pieces.find((q) => q !== p && !q.path && q.col === c && q.row === r);
   if (sp && sp.owner === p.owner) {
+    // merge up to the 6 cap; any excess isn't destroyed — it stays as the
+    // arriving piece, bumped to a free neighbouring cell (two friendly orders
+    // converging on one cell, or a target that grew while this piece flew)
+    const excess = sp.value + p.value - MAXV;
     sp.value = Math.min(MAXV, sp.value + p.value);
     sp.shield = sp.shield || p.shield;
     sp.charged = sp.charged || p.charged;
-    removePiece(g, p);
     addFx(g, 'ring', c, r, sp.owner, sp.value);
     addFx(g, 'merge', c, r, sp.owner, sp.value);
     SFX.combine(sp.value);
+    const spot = excess > 0 && freeNeighbour(g, c, r, p.from);
+    if (spot) {
+      p.value = excess; p.shield = false; p.charged = false;
+      p.col = spot[0]; p.row = spot[1];
+    } else removePiece(g, p);
     return;
   }
   if (sp) combat(g, p, sp);
   if (!g.pieces.includes(p)) return;
   const u = powerupAt(g, c, r);
   if (u) applyPower(g, p, u);
+}
+
+// nearest free cell around (c,r) for a bumped piece, preferring the side it
+// came from and the closest ring (1..3 cells out, so a target boxed in by
+// walls/pieces doesn't swallow the excess): in bounds, no wall / castle /
+// power-up / parked piece / claimed landing. null only if nothing is free.
+function freeNeighbour(g, c, r, from) {
+  const reserved = reservedDests(g);
+  const fx = from ? Math.sign(from[0] - c) : 0, fy = from ? Math.sign(from[1] - r) : 0;
+  const cand = [];
+  for (let dx = -3; dx <= 3; dx++) {
+    for (let dy = -3; dy <= 3; dy++) {
+      if (!dx && !dy) continue;
+      const ring = Math.max(Math.abs(dx), Math.abs(dy));
+      const side = Math.abs(Math.sign(dx) - fx) + Math.abs(Math.sign(dy) - fy);
+      cand.push([ring * 10 + side, dx, dy]);
+    }
+  }
+  cand.sort((a, b) => a[0] - b[0]);
+  for (const [, dx, dy] of cand) {
+    const cc = c + dx, rr = r + dy;
+    if (!inBounds(cc, rr) || g.walls.has(cellKey(cc, rr)) || castleAt(g, cc, rr) || powerupAt(g, cc, rr)) continue;
+    if (stationaryAt(g, cc, rr) || reserved.has(cellKey(cc, rr))) continue;
+    return [cc, rr];
+  }
+  return null;
 }
 
 const POWER_TYPES = ['charge', 'bolt', 'shield', 'heart'];
@@ -274,32 +309,66 @@ function endGame(g, winner) {
 
 // Resolve a pile-up of pieces that meet at one spot mid-flight as a single
 // group, deterministically (no dependence on who arrived a frame sooner): each
-// side's values combine (a piece caps at 6), the totals cancel, and the heavier
-// side's strongest piece survives carrying the difference. Equal totals wipe the
-// whole pile. (A piece landing exactly on a stationary enemy at its destination
-// is a deliberate attack and is left to arrival.)
+// side's values combine, the totals cancel, and the heavier side keeps the
+// difference — its strongest piece carries up to 6 and any remainder stays on
+// its next-strongest pieces (so 6+6 vs 2 leaves a 6 and a 4, not just a 6).
+// Equal totals wipe the whole pile. A shield blocks the hit exactly like it
+// does on arrival: the shielded side's shields pop and it takes no damage,
+// while an unshielded side that ran into it bursts. (A piece landing exactly
+// on a stationary enemy at its destination is a deliberate attack and is left
+// to arrival.)
 function resolveCluster(g, cluster) {
-  let s0 = 0, s1 = 0;
-  for (const p of cluster) { if (p.owner === 0) s0 += p.value; else s1 += p.value; }
-  s0 = Math.min(MAXV, s0); s1 = Math.min(MAXV, s1);
-  const big = Math.max(s0, s1);
+  const side = [cluster.filter((p) => p.owner === 0), cluster.filter((p) => p.owner === 1)];
+  const at = piecePos(cluster[0]);
+  const ac = Math.round(at[0]), ar = Math.round(at[1]);
+  const shielded = side.map((s) => s.some((p) => p.shield));
+  if (shielded[0] || shielded[1]) {
+    for (const pl of [0, 1]) {
+      if (!shielded[pl]) continue;
+      for (const p of side[pl]) if (p.shield) { p.shield = false; addFx(g, 'shield', ac, ar, pl, p.value); }
+    }
+    // both sides shielded: both shields pop, nobody is hurt; if they're still
+    // overlapping next frame they collide again, unshielded
+    for (const pl of [0, 1]) {
+      if (shielded[pl] || !shielded[1 - pl]) continue;
+      for (const p of side[pl]) { addFx(g, 'boom', ac, ar, pl, p.value); removePiece(g, p); }
+    }
+    SFX.shieldBlock();
+    return;
+  }
+  const s0 = side[0].reduce((a, p) => a + p.value, 0), s1 = side[1].reduce((a, p) => a + p.value, 0);
+  const big = Math.min(MAXV, Math.max(s0, s1));
   if (big >= 5) g.shake = Math.max(g.shake, big >= 6 ? 1.6 : 0.95);
   g.flash = Math.min(0.55, g.flash + 0.12 + big * 0.05);
-  const c = piecePos(cluster[0]);
-  addFx(g, 'shock', Math.round(c[0]), Math.round(c[1]), cluster[0].owner, big);
-  let survivor = null;
+  addFx(g, 'shock', ac, ar, cluster[0].owner, big);
+  const keep = new Set();
   if (s0 !== s1) {
     const win = s0 > s1 ? 0 : 1;
-    survivor = cluster.filter((p) => p.owner === win).sort((x, y) => y.value - x.value)[0];
-    survivor.value = Math.abs(s0 - s1);   // combined force minus the opposing total
+    let rem = Math.abs(s0 - s1);       // combined force minus the opposing total
+    for (const p of [...side[win]].sort((x, y) => y.value - x.value)) {
+      if (rem <= 0) break;
+      p.value = Math.min(MAXV, rem);
+      rem -= p.value;
+      keep.add(p);
+    }
   }
   for (const p of cluster) {
-    if (p === survivor) continue;
+    if (keep.has(p)) continue;
     const pp = piecePos(p);
     addFx(g, 'boom', Math.round(pp[0]), Math.round(pp[1]), p.owner, p.value);
     removePiece(g, p);
   }
   SFX.boom(big);
+}
+
+// Is cell (c,r) on the straight lane mover a is flying along (past its start)?
+// A parked piece only counts as "in the way" if it is — a diagonal flier passing
+// beside a piece never touches it, however close the two positions get.
+function onLane(a, c, r) {
+  const [fx, fy] = a.from, [tx, ty] = a.path.dest;
+  const sx = Math.sign(tx - fx), sy = Math.sign(ty - fy);
+  for (let k = 1; k <= a.path.cells; k++) if (fx + sx * k === c && fy + sy * k === r) return true;
+  return false;
 }
 
 function resolveCrossings(g) {
@@ -312,14 +381,55 @@ function resolveCrossings(g) {
     for (const b of g.pieces) {
       const pb = piecePos(b);
       if (Math.abs(pa[0] - pb[0]) >= 0.6 || Math.abs(pa[1] - pb[1]) >= 0.6) continue;
+      if (b !== a && !b.path && !onLane(a, b.col, b.row)) continue; // bystander beside the lane
       // a stationary enemy sitting on a's destination is a deliberate attack —
-      // leave it to arrival (so it uses the normal land-on-enemy combat)
-      if (b !== a && !b.path && a.path.dest[0] === b.col && a.path.dest[1] === b.row) continue;
+      // leave it to arrival (so it uses the normal land-on-enemy combat). But a
+      // piece that only just landed there this resolve raced a to the cell: that's
+      // a simultaneous pile-up, not a defence, so it resolves as a group too —
+      // otherwise whoever happened to arrive first would be the "defender" and
+      // eat the damage (5 + 3 racing to one cell left a 5 or a 2 by timing)
+      const landedNow = b.landT != null && g.resolveStart != null && b.landT > g.resolveStart;
+      if (b !== a && !b.path && !landedNow && a.path.dest[0] === b.col && a.path.dest[1] === b.row) continue;
       cluster.push(b);
       if (b.owner !== a.owner) hasEnemy = true;
     }
     if (hasEnemy && cluster.length >= 2) resolveCluster(g, cluster);
   }
+}
+
+// Stall rule. Game time (turn-based only advances it while resolving, ~1.6s a
+// turn, so 16s is about 10 turns of nothing happening).
+const STALL_RTS = 90, STALL_TURN = 16, SD_RATE_RTS = 0.5, SD_RATE_TURN = 2;
+// Progress = army value per side or castle energy changing. Piece COUNT is left
+// out on purpose: a split followed by a merge changes it but nothing else, and
+// would otherwise let one player stall sudden death forever.
+function progressSig(g) {
+  let v0 = 0, v1 = 0;
+  for (const p of g.pieces) { if (p.owner === 0) v0 += p.value; else v1 += p.value; }
+  return v0 + ':' + v1 + ':' + g.castles.map((k) => Math.ceil(k.energy)).join(':');
+}
+function stallWatch(g, dt) {
+  if (g.suddenDeath) return;
+  const sig = progressSig(g);
+  if (sig !== g.stallSig) { g.stallSig = sig; g.stallT = 0; return; }
+  g.stallT = (g.stallT || 0) + dt;
+  if (g.stallT >= (g.mode === 'turn' ? STALL_TURN : STALL_RTS)) {
+    g.suddenDeath = true;
+    g.flash = Math.min(0.55, g.flash + 0.3);
+    SFX.alarm();
+  }
+}
+
+// Both sides lost on the same frame: the healthier castle wins, then the
+// bigger surviving army; only a dead-even split is a draw (-1).
+function tieBreak(g) {
+  // real (unrounded, not yet clamped) energy: 0.9 beats 0.3 even though both
+  // display as 1. Within 0.001 counts as level and falls through to army value.
+  const e0 = g.castles[0].energy, e1 = g.castles[1].energy;
+  if (Math.abs(e0 - e1) > 0.001) return e0 > e1 ? 0 : 1;
+  let a0 = 0, a1 = 0;
+  for (const p of g.pieces) { if (p.owner === 0) a0 += p.value; else a1 += p.value; }
+  return a0 === a1 ? -1 : a0 > a1 ? 0 : 1;
 }
 
 function updateGame(g, dt) {
@@ -334,16 +444,17 @@ function updateGame(g, dt) {
   for (const p of [...g.pieces]) {
     if (p.path) p.prog += speedOf(g, p) * dt;
   }
-  // turn-based: opposing pieces that meet head-on / cross mid-flight collide
-  // where they overlap (real-time leaves combat to arrival, so two moving pieces
-  // would otherwise pass straight through each other)
-  if (g.mode === 'turn') resolveCrossings(g);
+  // opposing pieces that meet head-on / cross mid-flight — or a flier reaching
+  // a piece that stepped into its lane after it launched — collide where they
+  // overlap, in both modes (otherwise they'd pass straight through each other)
+  resolveCrossings(g);
   for (const p of [...g.pieces]) {
     if (p.path && p.prog >= p.path.cells) arrive(g, p);
   }
 
   // castle drain — ANY parked piece drains the castle (even the owner's, so
   // defending in person costs energy until the piece moves off), at 70% rate
+  const lost = [false, false];
   for (const k of g.castles) {
     let drain = 0, enemyDrain = false;
     for (const p of g.pieces) {
@@ -364,20 +475,42 @@ function updateGame(g, dt) {
       } else if (k.energy < k.max * 0.3 && g.time % 1.2 < dt) {
         SFX.alarm();
       }
-      if (k.energy <= 0) { k.energy = 0; endGame(g, 1 - k.owner); return; }
+      if (k.energy <= 0) lost[k.owner] = true; // clamped after the winner is picked
     }
   }
 
-  // elimination
-  for (const pl of [0, 1]) {
-    if (!g.pieces.some((p) => p.owner === pl)) { endGame(g, 1 - pl); return; }
+  // sudden death: once nothing has changed for a while (no kill, merge, drain
+  // or pickup — e.g. two 6s stuck either side of a wall) both castles start to
+  // bleed, so a deadlocked match still ends: the healthier castle wins
+  stallWatch(g, dt);
+  if (g.suddenDeath) {
+    const rate = g.mode === 'turn' ? SD_RATE_TURN : SD_RATE_RTS;
+    for (const k of g.castles) {
+      k.energy -= rate * dt;
+      k.lastDrainT = g.time;
+      if (k.energy <= 0) lost[k.owner] = true;
+    }
   }
 
-  // power-up spawns
-  g.powerTimer -= dt;
-  if (g.powerTimer <= 0) {
-    g.powerTimer = Math.max(4, window.TWEAKS.powerEvery);
-    spawnPowerup(g);
+  // castle drained or army eliminated. Judge both sides together: when both
+  // fall on the same frame (e.g. the last pieces trade out in turn-based),
+  // checking one side first would hand the top player every tie
+  for (const pl of [0, 1]) if (!g.pieces.some((p) => p.owner === pl)) lost[pl] = true;
+  if (lost[0] || lost[1]) {
+    const w = lost[0] && lost[1] ? tieBreak(g) : lost[0] ? 1 : 0;
+    for (const k of g.castles) k.energy = Math.max(0, k.energy);
+    endGame(g, w);
+    return;
+  }
+
+  // power-up spawns (real-time; turn-based spawns per turn — see spawnPowerup
+  // in main.js — since this only runs during the short resolve phase)
+  if (g.mode !== 'turn') {
+    g.powerTimer -= dt;
+    if (g.powerTimer <= 0) {
+      g.powerTimer = Math.max(4, window.TWEAKS.powerEvery);
+      spawnPowerup(g);
+    }
   }
 
   // drop stale selections
@@ -388,8 +521,10 @@ function updateGame(g, dt) {
 }
 
 // A tap on board cell (c,r). ownerFilter limits which player's pieces/claims
-// respond (used in online play: each device controls one side only).
-function tapCell(g, c, r, ownerFilter) {
+// respond (used in online play: each device controls one side only). prefer
+// names the player who most likely tapped (local 2P: whoever selected last) and
+// wins when the cell is a legal destination for both players' selections.
+function tapCell(g, c, r, ownerFilter, prefer) {
   // Is this cell a legal destination for either player's current selection?
   const claims = [];
   for (const pl of [0, 1]) {
@@ -400,7 +535,9 @@ function tapCell(g, c, r, ownerFilter) {
     if (lm.some((m) => m.c === c && m.r === r)) claims.push({ pl, p });
   }
   if (claims.length) {
-    claims.sort((a, b) => {
+    const pick = prefer != null && claims.find((cl) => cl.pl === prefer);
+    if (pick) claims.unshift(pick);
+    else claims.sort((a, b) => {
       const da = Math.max(Math.abs(a.p.col - c), Math.abs(a.p.row - r));
       const db = Math.max(Math.abs(b.p.col - c), Math.abs(b.p.row - r));
       return da - db;
@@ -470,6 +607,9 @@ function selectAt(g, c, r, ownerFilter) {
 // as allowed. Returns { sdx, sdy, landC, landR, overreach } or null.
 //   landC/landR null  → can't move that way at all (whole tether is "no-go")
 //   overreach true     → the finger is beyond the landing (draw that part red)
+// If every legal step along the ray is further than the finger (nearer cells are
+// claimed), the piece still goes to the nearest legal one — a forgiving drag — and
+// overreach stays false because the finger is short of, not beyond, the landing.
 function dragLanding(g, p, tc, tr) {
   if (!p || p.path) return null;
   const dx = tc - p.col, dy = tr - p.row;
@@ -529,6 +669,10 @@ function splitMove(g, pl, pieceId, k, c, r, force) {
     commandMove(g, p, c, r);
     return true;
   }
+  // the fragment is what leaves a camped enemy castle and pays its 1-value exit
+  // penalty, so a 1 would burn out on the spot (the split just destroyed value)
+  const ck = castleAt(g, p.col, p.row);
+  if (ck && ck.owner !== pl && k < 2) return false;
   const ghost = Object.assign({}, p, { value: k });
   if (!force && !legalMoves(g, ghost).some((m) => m.c === c && m.r === r)) return false;
   p.value -= k;
@@ -544,6 +688,6 @@ function splitMove(g, pl, pieceId, k, c, r, force) {
 }
 
 Object.assign(window, {
-  COLS, ROWS, MAXV, makeGame, updateGame, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
+  COLS, ROWS, MAXV, makeGame, updateGame, spawnPowerup, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
   legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt, anyMoving,
 });

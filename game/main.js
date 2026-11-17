@@ -5,8 +5,11 @@
   const ctx = canvas.getContext('2d');
   let screen = 'title'; // title | lobby | join | game | picker
   let picker = null;    // { title, options: [rosterIds], onPick }
+  // storage can throw (private mode, blocked site data): the game must still start
+  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
   let watchBottom = null;
-  let boardIdx = Math.min(BOARDS.length - 1, Math.max(0, parseInt(localStorage.getItem('cc-board') || '0', 10) || 0));
+  let boardIdx = Math.min(BOARDS.length - 1, Math.max(0, parseInt(lsGet('cc-board') || '0', 10) || 0));
   let g = null;
   let paused = false;
   let netLost = false;
@@ -15,19 +18,32 @@
 
   // RTS (real-time) vs Turn-based (plan 30s, then everyone's queued orders play
   // out). Mode is chosen on the title screen and persists.
-  let gameMode = localStorage.getItem('cc-mode') === 'turn' ? 'turn' : 'rts';
+  let gameMode = lsGet('cc-mode') === 'turn' ? 'turn' : 'rts';
   window.CC_MODE = gameMode;
   const PLAN_SECS = 30;     // planning window per turn
   const MIN_RES = 1.6;      // resolution runs at least this long (so campers drain)
   const MAX_RES = 5;        // …and no longer than this (safety for stuck movement)
+  const GRACE = 1.5;        // online: after the clock, wait this long for the guest's last orders + ready
+  let guestGoTurn = -1;     // guest: the turn we pressed GO (or auto-readied) on
   let tickSec = -1;         // last whole-second we played a countdown tick on
+  // local 2P: the player who most recently pressed one of their own pieces. A
+  // follow-up tap on a cell both players' selections can reach goes to them
+  // (not to whichever selected piece is nearer, which moved the wrong side)
+  let lastSelPl = null;
 
   window.UI = { buttons: [] };
 
   // Android edge-swipe / back gesture fires popstate, which would otherwise
   // quit the game. Push a guard entry so a stray back is captured by popstate
   // (below) and turned into a pause instead of an exit.
-  function pushGameGuard() { try { history.pushState({ cc: 'game' }, ''); } catch (e) {} }
+  // One guard entry is enough however many matches are played: pushing one per
+  // game left a stack of them, and the title's back gesture then needed a press
+  // for each. popstate consumes the guard (clears the flag).
+  let guardOn = false;
+  function pushGameGuard() {
+    if (guardOn) return;
+    try { history.pushState({ cc: 'game' }, ''); guardOn = true; } catch (e) {}
+  }
 
   function startGame() {
     g = makeGame(boardIdx);
@@ -50,6 +66,9 @@
     g.ready = [false, false];       // online: each side's "GO" flag (resolve when both, or timer)
     g.turnNo = (g.turnNo || 0) + 1;
     g.fx = []; g.shake = 0; g.flash = 0;
+    // power-ups: one every other turn. The engine's spawn timer only ticks while
+    // resolving (~2s a turn), which made them ~20x rarer than in real-time
+    if (g.turnNo % 2 === 0) spawnPowerup(g);
     tickSec = -1;
     if (AI.newTurn) AI.newTurn(g);
   }
@@ -60,6 +79,8 @@
     picker = null;
     g = null;
     netLost = false;
+    joinCode = '';
+    guestGoTurn = -1;
     setSplit(null);
     drags.clear();
     screen = 'title';
@@ -113,19 +134,24 @@
     },
     pickerChoose: (i) => { if (picker) picker.onPick(picker.options[i]); },
     pickerBack: () => { SFX.cursor(); picker = null; screen = 'title'; },
-    pickBoard: (i) => { boardIdx = i; localStorage.setItem('cc-board', String(i)); SFX.cursor(); },
-    setMode: (m) => { gameMode = m === 'turn' ? 'turn' : 'rts'; window.CC_MODE = gameMode; localStorage.setItem('cc-mode', gameMode); SFX.cursor(); },
-    // commit the turn early. solo/2P resolve at once; online needs both sides
-    // ready (or the clock), so GO is a "ready" handshake there
-    go: () => {
-      if (!(g && g.mode === 'turn' && g.phase === 'plan' && !g.over)) return;
-      setSplit(null);
-      if (NET.S.mode === 'guest') { NET.send({ t: 'ready' }); SFX.cursor(); return; }
-      if (NET.S.mode === 'host') { g.ready[0] = true; SFX.cursor(); return; } // tickTurn resolves once both are ready
-      startResolve();
+    pickBoard: (i) => { boardIdx = i; lsSet('cc-board', String(i)); SFX.cursor(); },
+    setMode: (m) => { gameMode = m === 'turn' ? 'turn' : 'rts'; window.CC_MODE = gameMode; lsSet('cc-mode', gameMode); SFX.cursor(); },
+    // commit your plan. Every mode is a "ready" handshake that tickTurn turns
+    // into a resolve once every side is in (or the clock runs out): online each
+    // device readies its own side, local 2P has a GO per player (one GO used to
+    // resolve both plans mid-thought), and vs an AI we wait for an LLM's answer
+    go: (pl) => {
+      if (!(g && g.mode === 'turn' && g.phase === 'plan' && !g.over) || paused) return;
+      // a player's GO closes THEIR split picker, not the other player's
+      if (splitUI && (pl == null || splitUI.pl === (pl === 1 ? 1 : 0))) setSplit(null);
+      SFX.cursor();
+      if (NET.S.mode === 'guest') { NET.send({ t: 'ready', tn: g.turnNo }); g.ready[1] = true; guestGoTurn = g.turnNo; return; }
+      if (NET.S.mode === 'host') { g.ready[0] = true; return; }
+      if (controllablePls().length === 2) { g.ready[pl === 1 ? 1 : 0] = true; return; }
+      g.ready[0] = g.ready[1] = true; // the lone human is in; the AI side counts once it has planned
     },
     createOnline: () => { SFX.select(); NET.hostRoom(); screen = 'lobby'; },
-    joinOnline: () => { SFX.cursor(); screen = 'join'; },
+    joinOnline: () => { SFX.cursor(); joinCode = ''; screen = 'join'; },
     cancelOnline: () => { SFX.cursor(); backToTitle(); },
     copyLink: () => { SFX.cursor(); NET.copyLink(); },
     shareLink: () => { SFX.cursor(); NET.shareLink(); },
@@ -160,7 +186,13 @@
   };
 
   NET.bind({
-    onPeerJoined: () => { startGame(); NET.sendStart(boardIdx, g); },
+    onPeerJoined: () => {
+      // the previous guest dropped mid-match and someone (them, reloaded, or
+      // anyone with the code) reconnected: pick the match up where it stands
+      // instead of restarting it — a restart let a losing guest undo the position
+      if (screen === 'game' && g && !g.over) { netLost = false; NET.sendStart(boardIdx, g); return; }
+      startGame(); NET.sendStart(boardIdx, g);
+    },
     onGuestStart: (bi, maxE, walls, pieces, mode) => {
       boardIdx = Math.max(0, Math.min(BOARDS.length - 1, bi | 0));
       g = makeGame(boardIdx);
@@ -179,6 +211,7 @@
       if (maxE > 0) for (const k of g.castles) { k.max = maxE; k.energy = maxE; }
       paused = false;
       netLost = false;
+      guestGoTurn = -1; // a fresh match: no GO pressed yet (a stale one hid GO and stalled the host)
       setSplit(null);
       drags.clear();
       lastTap = { t: 0, c: -1, r: -1 };
@@ -194,6 +227,8 @@
       // guest: a phase flip (plan→resolve, or into a fresh plan) wipes our local
       // ghost orders — they've either fired or a new turn has begun
       if (g.mode === 'turn' && g.phase !== prevPhase) g.orders = {};
+      // our GO may not have reached the host yet — don't let a snapshot un-ready it
+      if (g.mode === 'turn' && g.ready && guestGoTurn === g.turnNo) g.ready[1] = true;
       if (m.snd) for (const s of m.snd) { const fn = SFX[s[0]]; if (typeof fn === 'function') fn.apply(SFX, s[1] || []); }
     },
     onGuestInput: (m) => {
@@ -203,10 +238,14 @@
         if (m.t === 'rematch') ACTIONS.rematch();
         return;
       }
-      if (paused) return;
+      // (turn plans keep flowing while paused: the clock is frozen, and orders
+      // already in flight when the pause began must not vanish from the host)
+      if (paused && g.mode !== 'turn') return;
       // turn-based: the guest sends queued orders / a ready flag, not live taps
       if (g.mode === 'turn') {
         if (g.phase !== 'plan') return;
+        // made in an earlier turn (slow link): it no longer matches the board
+        if (m.tn != null && m.tn !== g.turnNo) return;
         if (m.t === 'order') {
           const p = pieceById(g, m.id | 0);
           if (p && p.owner === 1 && !p.path && legalMoves(g, p).some((x) => x.c === (m.c | 0) && x.r === (m.r | 0))) g.orders[p.id] = { id: p.id, kind: 'move', c: m.c | 0, r: m.r | 0 };
@@ -256,6 +295,7 @@
   // a back/forward gesture during a live match pauses instead of quitting —
   // we re-push the guard so the page never actually navigates away
   window.addEventListener('popstate', () => {
+    guardOn = false; // that entry is gone now
     if (screen === 'game' && g && !g.over && !netLost) {
       pushGameGuard();
       if (!paused) ACTIONS.pause();
@@ -273,12 +313,58 @@
 
   // route a board tap through whichever channel owns the rules (move a piece
   // the engine already has selected, or select/clear via tapCell's toggle)
+  // pieces another finger is mid-drag with right now
+  function heldPieceIds() {
+    const s = new Set();
+    for (const d of drags.values()) if (d.pieceId != null && !d.fromChip) s.add(d.pieceId);
+    return s;
+  }
+  // clear a selection only if it still points at this piece (a second finger may
+  // have selected something else since)
+  function deselect(pl, id) { if (g.sel[pl] === id) g.sel[pl] = null; }
+
+  // local 2P shares one screen. A press on a piece owned by the OTHER player is
+  // an attack when the opposing player is holding a selection that can legally
+  // hit it (and they selected last, or nobody else did) — not a selection of the
+  // enemy piece. Returns true if the press should be treated as that attack.
+  function isAttackPress(c, r) {
+    if (controllablePls().length < 2) return false;
+    const sp = stationaryAt(g, c, r);
+    if (!sp) return false;
+    const atk = 1 - sp.owner, id = g.sel[atk], p = id != null && pieceById(g, id);
+    if (!p || p.path || g.sel[sp.owner] === sp.id) return false;
+    if (lastSelPl != null && lastSelPl !== atk) return false;
+    return legalMoves(g, p).some((m) => m.c === c && m.r === r && m.kind === 'attack');
+  }
+
+  // split picker open, local 2P: a press that clearly belongs to the OTHER player
+  // (their own piece, or a cell their selection can reach that isn't one of the
+  // picker's landing cells) must not fire or cancel the opener's picker
+  function isOtherPlayersPress(c, r) {
+    if (!splitUI || controllablePls().length < 2) return false;
+    const other = 1 - splitUI.pl;
+    const sp = stationaryAt(g, c, r);
+    if (sp && sp.owner === other) return true;
+    if (splitDestLegal(c, r)) return false;
+    const id = g.sel[other], p = id != null && pieceById(g, id);
+    return !!(p && !p.path && lastSelPl === other && legalMoves(g, p).some((m) => m.c === c && m.r === r));
+  }
+
   function dispatchTap(c, r) {
-    if (NET.S.mode === 'guest') NET.send({ t: 'tap', c, r });
-    else if (NET.S.mode === 'host') tapCell(g, c, r, 0);
-    else if (AI.S.watch) { /* spectator: board taps do nothing */ }
-    else if (AI.active()) tapCell(g, c, r, 0);
-    else tapCell(g, c, r);
+    // a finger mid-drag keeps its piece: a second finger's tap must not move it
+    const held = heldPieceIds();
+    if (held.size && NET.S.mode === 'guest') return; // the guest's selection lives on the host
+    const saved = g.sel.slice();
+    if (held.size) for (const pl of [0, 1]) if (held.has(g.sel[pl])) g.sel[pl] = null;
+    try {
+      if (NET.S.mode === 'guest') NET.send({ t: 'tap', c, r });
+      else if (NET.S.mode === 'host') tapCell(g, c, r, 0);
+      else if (AI.S.watch) { /* spectator: board taps do nothing */ }
+      else if (AI.active()) tapCell(g, c, r, 0);
+      else tapCell(g, c, r, null, lastSelPl);
+    } finally {
+      if (held.size) for (const pl of [0, 1]) if (held.has(saved[pl]) && g.sel[pl] == null && g.pieces.some((q) => q.id === saved[pl] && !q.path)) g.sel[pl] = saved[pl];
+    }
   }
 
   // press-down on an own piece: select it without toggling (so a drag that
@@ -288,7 +374,9 @@
     if (NET.S.mode === 'host') return selectAt(g, c, r, 0);
     if (AI.S.watch) return null;
     if (AI.active()) return selectAt(g, c, r, 0);
-    return selectAt(g, c, r);
+    const pl = selectAt(g, c, r);
+    if (pl != null) lastSelPl = pl;
+    return pl;
   }
 
   // drag-place: move exactly the dragged piece (never closest-claim, so a drag
@@ -296,6 +384,27 @@
   function dispatchPlace(pl, pieceId, c, r) {
     if (NET.S.mode === 'guest') { NET.send({ t: 'tap', c, r }); return true; }
     return commandPieceTo(g, pl, pieceId, c, r);
+  }
+
+  // a pure tap on an own piece that the previously-selected piece can merge onto
+  // (the green "+" cell): the id to merge, else null. Pressing the piece already
+  // re-selected it, so the prior selection is captured at pointerdown.
+  function tapMergeFrom(prevSel, pieceId, c, r) {
+    if (prevSel == null || prevSel === pieceId) return null;
+    const prev = pieceById(g, prevSel);
+    if (!prev || prev.path) return null;
+    return legalMoves(g, prev).some((m) => m.c === c && m.r === r && m.kind === 'combine') ? prev : null;
+  }
+
+  function dispatchMerge(pl, prev, c, r) {
+    if (NET.S.mode === 'guest') {
+      // the press already re-selected the target on the host — select the mover
+      // again, then tap the target cell (the host's tapCell sees a legal combine)
+      NET.send({ t: 'sel', c: prev.col, r: prev.row });
+      NET.send({ t: 'tap', c, r });
+      return;
+    }
+    if (commandPieceTo(g, pl, prev.id, c, r)) g.sel[pl] = null;
   }
 
   function dispatchSplitMove(pl, pieceId, k, c, r) {
@@ -335,6 +444,7 @@
   function openPicker(pl, pieceId) {
     const p = pieceById(g, pieceId);
     if (!p || p.path || p.value < 2) { SFX.deny(); return false; }
+    if (g.mode === 'turn' && g.ready && g.ready[pl]) { SFX.deny(); return false; } // locked in with GO
     setSplit({ pl, pieceId, k: 0, t0: performance.now() / 1000 });
     if (NET.S.mode !== 'guest' && g.sel[pl] === pieceId) g.sel[pl] = null;
     SFX.select();
@@ -375,13 +485,14 @@
         // user can either tap a chip then tap a cell, or drag a chip to a cell.
         // chipBox lets pointerup tell a tap-on-chip (arm only) from a drag-off.
         if (b.chip != null && splitUI) {
+          const wasArmed = splitUI.k === b.chip;
           splitUI.k = b.chip;
           SFX.cursor();
           try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
           drags.set(e.pointerId, {
-            c: -1, r: -1, fromChip: true, chipBox: { x: b.x, y: b.y, w: b.w, h: b.h },
+            c: -1, r: -1, fromChip: true, wasArmed, chipBox: { x: b.x, y: b.y, w: b.w, h: b.h },
             pieceId: null, pl: splitUI.pl, ox: b.x + b.w / 2, oy: b.y + b.h / 2,
-            lx, ly, startX: lx, startY: ly, moved: false,
+            lx, ly, startX: lx, startY: ly, moved: false, turn: g && g.turnNo,
           });
           return;
         }
@@ -401,12 +512,14 @@
       const [c, r] = cellOf(lx, ly);
       if (!inBounds(c, r)) return;
       try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-      drags.set(e.pointerId, { c, r, pieceId: null, pl: -1, lx, ly, startX: lx, startY: ly, moved: false });
-      // while the picker is open, board presses resolve on pointerup (tap a
-      // gold cell to launch, tap elsewhere to cancel)
-      if (splitUI) return;
+      const other = isOtherPlayersPress(c, r);
+      drags.set(e.pointerId, { c, r, pieceId: null, pl: -1, lx, ly, startX: lx, startY: ly, moved: false, other });
+      // while the picker is open, its owner's board presses resolve on pointerup
+      // (tap a gold cell to launch, tap elsewhere to cancel); the other player's
+      // presses carry on as normal and leave the picker alone
+      if (splitUI && !other) return;
       const sp = ownPieceAt(c, r);
-      if (sp) { const d = drags.get(e.pointerId); d.pieceId = sp.id; d.pl = sp.owner; dispatchSelect(c, r); }
+      if (sp && !isAttackPress(c, r)) { const d = drags.get(e.pointerId); d.pieceId = sp.id; d.pl = sp.owner; d.prevSel = g.sel[sp.owner]; dispatchSelect(c, r); }
       else dispatchTap(c, r); // empty/enemy cell: move the selected piece here
     }
   });
@@ -425,11 +538,13 @@
     if (drag.fromChip) {
       const b = drag.chipBox;
       const onChip = b && lx >= b.x && lx <= b.x + b.w && ly >= b.y && ly <= b.y + b.h;
-      if (!onChip && splitUI && inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
+      // a chip can end up over a gold cell: tapping the already-armed chip there
+      // launches to the cell underneath, so no landing spot is unreachable
+      if ((!onChip || drag.wasArmed) && splitUI && inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
       return;
     }
 
-    if (splitUI) {
+    if (splitUI && !drag.other) {
       const tap = c === drag.c && r === drag.r;
       if (inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r); // tap/drag a gold cell
       else if (tap) closeSplitUI();                                // tap elsewhere cancels
@@ -441,6 +556,8 @@
       // Detecting on the *second tap's release* (not the press) means a
       // tap-then-drag is never mistaken for a double-tap.
       if (inBounds(c, r)) {
+        const mate = drag.pieceId != null && tapMergeFrom(drag.prevSel, drag.pieceId, c, r);
+        if (mate) { dispatchMerge(drag.pl, mate, c, r); lastTap.t = 0; return; }
         const now = performance.now();
         if (now - lastTap.t < 350 && lastTap.c === c && lastTap.r === r) {
           const sp = ownPieceAt(c, r);
@@ -503,11 +620,28 @@
       g.planT -= dt;
       const s = Math.ceil(g.planT);
       if (s <= 5 && s >= 1 && s !== tickSec) { tickSec = s; SFX.cursor(); }  // last-5s countdown beeps
-      if (g.planT <= 0 || (g.ready[0] && g.ready[1])) startResolve();        // timer, or both sides ready (online)
+      const both = g.ready[0] && g.ready[1];
+      if (NET.S.mode === 'host') {
+        // the clock ran out: give the guest a moment so orders it queued in the
+        // last instant (still in flight to us) aren't dropped — its client auto-
+        // readies at 0 right after sending them, so we resolve as soon as that lands
+        const gone = netLost || !NET.S.connected;
+        if (both || (g.planT <= 0 && (g.ready[1] || gone || g.planT <= -GRACE))) startResolve();
+      } else if (AI.S.watch) {
+        if (g.planT <= 0 || (AI.turnReady() && g.planT <= PLAN_SECS - 1)) startResolve(); // AI vs AI: no GO to press
+      } else if (g.planT <= 0 || (both && AI.turnReady())) {
+        startResolve();
+      }
     } else {
       updateGame(g, dt);
       g.resolveT += dt;
       if (g.over) return;
+      // safety cap: never leave a piece frozen mid-lane through the next plan
+      // phase (planning doesn't advance movement) — play the rest out now
+      if (g.resolveT >= MAX_RES) {
+        for (let i = 0; i < 900 && anyMoving(g) && !g.over; i++) updateGame(g, 1 / 30);
+        if (g.over) return;
+      }
       if ((g.resolveT >= MIN_RES && !anyMoving(g)) || g.resolveT >= MAX_RES) startPlan();
     }
   }
@@ -520,6 +654,7 @@
         for (const o of AI.planTurn(g, own)) if (!g.orders[o.id]) g.orders[o.id] = o;
       }
     }
+    g.resolveStart = g.time; // pieces landing after this are contestants, not defenders
     applyOrders();
     setSplit(null);
     g.sel = [null, null];
@@ -562,77 +697,93 @@
   // and stores it for owner-1; solo/2P/host just keep it locally
   function queueOrder(pl, pieceId, c, r) {
     g.orders[pieceId] = { id: pieceId, kind: 'move', c, r };
-    if (NET.S.mode === 'guest') NET.send({ t: 'order', id: pieceId, c, r });
+    if (NET.S.mode === 'guest') NET.send({ t: 'order', id: pieceId, c, r, tn: g.turnNo });
     SFX.select();
   }
   function queueSplitOrder(pl, pieceId, k, c, r) {
     g.orders[pieceId] = { id: pieceId, kind: 'split', k, c, r };
-    if (NET.S.mode === 'guest') NET.send({ t: 'sorder', id: pieceId, k, c, r });
+    if (NET.S.mode === 'guest') NET.send({ t: 'sorder', id: pieceId, k, c, r, tn: g.turnNo });
     SFX.split();
   }
   function cancelOrder(pieceId) {
     if (!g.orders[pieceId]) return;
     delete g.orders[pieceId];
-    if (NET.S.mode === 'guest') NET.send({ t: 'cancel', id: pieceId });
+    if (NET.S.mode === 'guest') NET.send({ t: 'cancel', id: pieceId, tn: g.turnNo });
     SFX.cursor();
   }
 
   // press during planning: select the pressed piece (for the legal-cell glow) and
   // start tracking the pointer so a tap and a drag can be told apart on release
   function handleTurnDown(e, lx, ly) {
-    if (g.over || netLost || g.phase !== 'plan') return;
+    if (g.over || netLost || g.phase !== 'plan' || g.planT <= 0) return;
     const [c, r] = cellOf(lx, ly);
     if (!inBounds(c, r)) return;
     try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-    const sp = ownPieceAt(c, r);
+    const other = isOtherPlayersPress(c, r);
+    // enemy piece pressed while the opponent holds a selection that can hit it →
+    // this is the attack's destination tap, not a selection of the enemy piece
+    let sp = ownPieceAt(c, r);
+    if (sp && isAttackPress(c, r)) sp = null;
+    // READY locks that player's plan: no new selections or edits after GO
+    if (sp && g.ready && g.ready[sp.owner]) sp = null;
     drags.set(e.pointerId, {
       c, r, pieceId: sp ? sp.id : null, pl: sp ? sp.owner : -1, lx, ly, startX: lx, startY: ly,
       moved: false, fromChip: false, wasSel: sp ? g.sel[sp.owner] === sp.id : false,
-      hadOrder: sp ? !!g.orders[sp.id] : false,
+      hadOrder: sp ? !!g.orders[sp.id] : false, prevSel: sp ? g.sel[sp.owner] : null,
+      other, turn: g.turnNo,
     });
-    if (sp && !splitUI) g.sel[sp.owner] = sp.id;
+    if (sp && (!splitUI || other)) { g.sel[sp.owner] = sp.id; lastSelPl = sp.owner; }
   }
 
   // release during planning: queue / replace / cancel an order
   function handleTurnUp(e) {
     const drag = drags.get(e.pointerId);
     drags.delete(e.pointerId);
-    if (!drag || g.over || netLost || g.phase !== 'plan') return;
+    if (!drag || g.over || netLost || paused || g.phase !== 'plan' || g.planT <= 0) return;
+    // a finger held down across a resolve (or any turn change) must not queue
+    // an order in the next plan the player never made
+    if (drag.turn !== g.turnNo) return;
     const { lx, ly } = toLogical(e);
     const [c, r] = cellOf(lx, ly);
     // fragment chip dragged onto a gold cell → queue a split
     if (drag.fromChip) {
       const b = drag.chipBox, onChip = b && lx >= b.x && lx <= b.x + b.w && ly >= b.y && ly <= b.y + b.h;
-      if (!onChip && splitUI && inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
+      if ((!onChip || drag.wasArmed) && splitUI && !g.ready[splitUI.pl] && inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
       return;
     }
-    if (splitUI) {
+    if (splitUI && !drag.other) {
       if (inBounds(c, r) && splitDestLegal(c, r)) fireSplit(c, r);
       else if (c === drag.c && r === drag.r) closeSplitUI();
       return;
     }
+    // released off the board (the GO strip, the HUD): cancel, like real-time
+    if (!inBounds(c, r)) return;
     // dragged a piece onto another cell → queue that move
     if (drag.pieceId != null && drag.moved && !(c === drag.c && r === drag.r)) {
       const p = pieceById(g, drag.pieceId), land = p && dragLanding(g, p, c, r);
-      if (land && land.landC != null) { queueOrder(drag.pl, drag.pieceId, land.landC, land.landR); g.sel[drag.pl] = null; }
+      if (land && land.landC != null) { queueOrder(drag.pl, drag.pieceId, land.landC, land.landR); deselect(drag.pl, drag.pieceId); }
       return;
     }
     // pure tap on the pressed own piece: double-tap explodes, a deliberate re-tap cancels its order
     if (drag.pieceId != null && c === drag.c && r === drag.r) {
+      const mate = tapMergeFrom(drag.prevSel, drag.pieceId, c, r);
+      if (mate) { queueOrder(drag.pl, mate.id, c, r); deselect(drag.pl, drag.pieceId); lastTap.t = 0; return; }
       const now = performance.now();
       if (now - lastTap.t < 350 && lastTap.c === c && lastTap.r === r) {
         const sp = ownPieceAt(c, r);
         if (sp && sp.value >= 2) { openPicker(sp.owner, sp.id); lastTap.t = 0; return; }
       }
       lastTap = { t: now, c, r };
-      if (drag.wasSel && drag.hadOrder) { cancelOrder(drag.pieceId); g.sel[drag.pl] = null; }
+      if (drag.wasSel && drag.hadOrder) { cancelOrder(drag.pieceId); deselect(drag.pl, drag.pieceId); }
       return;
     }
     // tapped a destination cell with a piece selected → queue the move
     if (inBounds(c, r)) {
-      for (const pl of controllablePls()) {
+      const pls = controllablePls().sort((a, b) => (b === lastSelPl) - (a === lastSelPl)); // last selector first
+      for (const pl of pls) {
+        if (g.ready && g.ready[pl]) continue; // locked in with GO
         const id = g.sel[pl], p = id != null && pieceById(g, id);
-        if (p && legalMoves(g, p).some((m) => m.c === c && m.r === r)) { queueOrder(pl, p.id, c, r); g.sel[pl] = null; return; }
+        if (p && legalMoves(g, p).some((m) => m.c === c && m.r === r)) { queueOrder(pl, p.id, c, r); deselect(pl, p.id); return; }
       }
     }
   }
@@ -652,11 +803,19 @@
     if (screen === 'game') SFX.music.stop(); else SFX.music.start();
     UI.buttons.length = 0;
     if (screen === 'game' && g) {
+      // an opponent who backgrounded the app (phone locked, app switch) freezes
+      // the match until they're back, instead of leaving their side defenceless
+      const away = NET.S.peerAway && !netLost && !g.over;
       if (NET.S.mode === 'guest') {
         // turn-based: freeze while planning (the host owns the clock); the host's
         // phase/countdown arrive via the state stream. Smooth only during resolve.
         if (!paused && !(g.mode === 'turn' && g.phase === 'plan')) NET.guestSmooth(g, dt);
-      } else if (!paused) {
+        // clock out: say we're done, right behind any orders still in flight, so
+        // the host (which waits a short grace for this) resolves with all of them
+        if (g.mode === 'turn' && g.phase === 'plan' && !g.over && g.planT <= 0 && guestGoTurn !== g.turnNo) {
+          NET.send({ t: 'ready', tn: g.turnNo }); guestGoTurn = g.turnNo; setSplit(null);
+        }
+      } else if (!paused && !away && !(netLost && NET.S.mode === 'host')) {
         if (g.mode === 'turn') tickTurn(dt);
         else { updateGame(g, dt); AI.tick(g, dt); }
       }
@@ -674,8 +833,9 @@
       if (g.mode === 'turn') drawTurnHud(ctx, g, t);
       if (!g.over) AI.drawHud(ctx); // don't freeze a taunt/status on the win screen
       if (NET.S.mode === 'host') NET.hostTick(g, paused, now);
+      if (away && !paused) drawOverlayMsg(ctx, 'OPPONENT AWAY', '#ffd23f', 'MATCH PAUSED UNTIL THEY RETURN');
       if (netLost) {
-        drawOverlayMsg(ctx, 'OPPONENT LEFT', '#ff5566', 'TAP TO RETURN TO TITLE');
+        drawOverlayMsg(ctx, 'OPPONENT LEFT', '#ff5566', NET.S.mode === 'host' && !g.over ? 'MATCH PAUSED · TAP TO LEAVE' : 'TAP TO RETURN TO TITLE');
         UI.buttons.push({ x: 0, y: 0, w: W, h: H, abs: true, action: ACTIONS.netBack });
       }
     } else if (screen === 'picker' && picker) {
@@ -697,7 +857,8 @@
   if (roomMatch) {
     joinCode = roomMatch[1].toUpperCase();
     screen = 'invite';
-    setTimeout(() => { if (typeof Peer !== 'undefined' && screen === 'invite') NET.join(joinCode); }, 400);
+    // join() reports a missing network library on the invite screen itself (a skipped join left it saying DROPPING IN forever)
+    setTimeout(() => { if (screen === 'invite') NET.join(joinCode); }, 400);
   }
 
   if (document.fonts && document.fonts.load) {
