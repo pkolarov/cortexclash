@@ -1,18 +1,18 @@
 // Cortex Clash — offline cache (PWA)
 // Bump the version when you change game files so clients pick up the update.
-const CACHE = 'cortex-clash-v1048';
+const CACHE = 'cortex-clash-v1049';
 const APP_SHELL = [
   '.',
   'index.html',
   'manifest.webmanifest',
-  'game/sound.js?v=1048',
-  'game/boards.js?v=1048',
-  'game/engine.js?v=1048',
-  'game/campaign.js?v=1048',
-  'game/net.js?v=1048',
-  'game/render.js?v=1048',
-  'game/ai.js?v=1048',
-  'game/main.js?v=1048',
+  'game/sound.js?v=1049',
+  'game/boards.js?v=1049',
+  'game/engine.js?v=1049',
+  'game/campaign.js?v=1049',
+  'game/net.js?v=1049',
+  'game/render.js?v=1049',
+  'game/ai.js?v=1049',
+  'game/main.js?v=1049',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',
