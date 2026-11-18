@@ -75,6 +75,38 @@ function makeGame(boardIdx) {
   };
 }
 
+// A hand-built position for the campaign: `L` = { walls:[[c,r]], you:[[c,r,v,flags?]], foe:[...],
+// powerups:[{type,c,r}], youE, foeE (castle energy), noSpawn, noStall, noElim:[bool,bool] }.
+// flags: 's' on a piece = starts shielded. Rules live in g.rules (all optional).
+function makeLevelGame(L) {
+  const maxE = Math.round(window.TWEAKS.castleEnergy);
+  const walls = new Set((L.walls || []).map(([c, r]) => cellKey(c, r)));
+  // `max` stays the normal size, so a hand-set low energy shows as a low bar (and a heart can top it up)
+  const castles = [
+    { owner: 0, col: 4, row: 11, energy: L.youE || maxE, max: maxE, lastDrainT: -9, attackT: -9 },
+    { owner: 1, col: 4, row: 1, energy: L.foeE || maxE, max: maxE, lastDrainT: -9, attackT: -9 },
+  ];
+  const pieces = [];
+  let pid = 1;
+  for (const [owner, list] of [[0, L.you || []], [1, L.foe || []]]) {
+    for (const [c, r, v, fl] of list) {
+      pieces.push({
+        id: pid++, owner, value: v, col: c, row: r,
+        path: null, prog: 0, from: null, shield: fl === 's', charged: false, boostUntil: -99,
+        shieldUntil: fl === 's' ? 12 : 0,
+      });
+    }
+  }
+  const g = {
+    boardIdx: 0, walls, castles, pieces,
+    powerups: (L.powerups || []).map((u) => ({ type: u.type, col: u.c, row: u.r, born: 0 })),
+    sel: [null, null], time: 0, powerTimer: 6, fx: [],
+    winner: -1, over: false, overT: 0, shake: 0, flash: 0, nextId: pid,
+    rules: { noSpawn: !!L.noSpawn, noStall: !!L.noStall, noTimer: !!L.noTimer, noElim: L.noElim || [false, false] },
+  };
+  return g;
+}
+
 function pieceById(g, id) { return g.pieces.find((p) => p.id === id) || null; }
 function stationaryAt(g, c, r) { return g.pieces.find((p) => !p.path && p.col === c && p.row === r) || null; }
 function anyMoving(g) { return g.pieces.some((p) => p.path); }
@@ -294,6 +326,7 @@ function freeNeighbour(g, c, r, from) {
 
 const POWER_TYPES = ['charge', 'bolt', 'shield', 'heart'];
 function spawnPowerup(g) {
+  if (g.rules && g.rules.noSpawn) return;
   if (g.powerups.length >= 3) return;
   const cells = [];
   for (let r = 4; r <= 8; r++) {
@@ -419,7 +452,7 @@ function progressSig(g) {
   return v0 + ':' + v1 + ':' + g.castles.map((k) => Math.ceil(k.energy)).join(':');
 }
 function stallWatch(g, dt) {
-  if (g.suddenDeath) return;
+  if (g.suddenDeath || (g.rules && g.rules.noStall)) return;
   const sig = progressSig(g);
   if (sig !== g.stallSig) { g.stallSig = sig; g.stallT = 0; return; }
   g.stallT = (g.stallT || 0) + dt;
@@ -510,7 +543,11 @@ function updateGame(g, dt) {
   // castle drained or army eliminated. Judge both sides together: when both
   // fall on the same frame (e.g. the last pieces trade out in turn-based),
   // checking one side first would hand the top player every tie
-  for (const pl of [0, 1]) if (!g.pieces.some((p) => p.owner === pl)) lost[pl] = true;
+  // (a campaign lesson can switch elimination off for a side that starts with no army)
+  for (const pl of [0, 1]) {
+    if (g.rules && g.rules.noElim && g.rules.noElim[pl]) continue;
+    if (!g.pieces.some((p) => p.owner === pl)) lost[pl] = true;
+  }
   if (lost[0] || lost[1]) {
     const w = lost[0] && lost[1] ? tieBreak(g) : lost[0] ? 1 : 0;
     for (const k of g.castles) k.energy = Math.max(0, k.energy);
@@ -703,6 +740,6 @@ function splitMove(g, pl, pieceId, k, c, r, force) {
 }
 
 Object.assign(window, {
-  COLS, ROWS, MAXV, makeGame, updateGame, spawnPowerup, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
+  COLS, ROWS, MAXV, makeGame, makeLevelGame, endGame, updateGame, spawnPowerup, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
   legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt, anyMoving,
 });

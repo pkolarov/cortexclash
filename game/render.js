@@ -778,6 +778,10 @@ function drawGame(ctx, g, paused, t) {
   }
 
   if (paused && !g.over) drawOverlayMsg(ctx, 'PAUSED', '#aebcff', 'TAP ▶ TO RESUME');
+  if (paused && !g.over && window.CAMP) {
+    drawBigBtn(ctx, W / 2 - 220, H / 2 + 150, 440, 90, window.quitArmed && window.quitArmed() ? 'TAP AGAIN TO QUIT' : 'QUIT RUN', '#ff5566', t, true, 20);
+    UI.buttons.push({ x: W / 2 - 220, y: H / 2 + 150, w: 440, h: 90, abs: true, action: ACTIONS.campQuit });
+  }
 
   // pause + mute — drawn unrotated so they sit bottom-left on both devices
   if (!g.over) {
@@ -1028,6 +1032,7 @@ function drawGameOver(ctx, g, t) {
   ctx.fillStyle = 'rgba(4,4,12,' + Math.min(0.78, g.overT * 1.5) + ')';
   ctx.fillRect(0, 0, W, H);
   ctx.restore();
+  if (window.CAMP && window.CAMP.result) { drawCampResult(ctx, window.CAMP, t); return; }
   const flick = 0.85 + 0.15 * Math.sin(t * 9);
   ctx.save();
   ctx.globalAlpha = flick;
@@ -1132,8 +1137,12 @@ function drawTurnHud(ctx, g, t) {
 // seat: 0/1 in local 2P, null when this device has a single seat.
 function drawTurnSeat(ctx, g, t, seat, mine) {
   if (g.phase === 'resolve') { glowText(ctx, 'RESOLVING…', W / 2, 160, 28, '#ffd23f', 12); return; }
-  const secs = Math.max(0, Math.ceil(g.planT)), warn = secs <= 5;
-  glowText(ctx, 'PLAN  ' + secs + 's', W / 2, 160, 32, warn ? '#ff5566' : '#19e6ff', warn ? 16 : 8);
+  const noClock = g.planT > 900; // puzzles: plan for as long as you like
+  const secs = Math.max(0, Math.ceil(g.planT)), warn = !noClock && secs <= 5;
+  // a puzzle shows its turn budget instead of a clock; the last turn turns red
+  const lastTurn = g.limit && g.turnNo >= g.limit;
+  const label = g.limit ? (lastTurn ? 'LAST TURN ' : 'TURN ') + g.turnNo + ' / ' + g.limit : noClock ? 'YOUR PLAN' : 'PLAN  ' + secs + 's';
+  glowText(ctx, label, W / 2, 178, 30, warn || lastTurn ? '#ff5566' : '#19e6ff', warn || lastTurn ? 16 : 8);
   const owners = seat == null ? mine : [seat];
   let n = 0;
   for (const id in g.orders) { const p = pieceById(g, +id); if (p && owners.indexOf(p.owner) >= 0) n++; }
@@ -1151,7 +1160,7 @@ function drawTurnSeat(ctx, g, t, seat, mine) {
   } else if ((online || seat != null) && ready[other]) {
     line += ' · ' + (online ? 'OPPONENT' : PLAYER_NAMES[other]) + ' READY'; lineCol = '#ffd23f';
   }
-  glowText(ctx, line, W / 2, 198, 14, lineCol, 4);
+  glowText(ctx, line, W / 2, 210, 14, lineCol, 4);
   if (window.AI && AI.S.watch) return; // spectating AI vs AI: nobody here to press GO
   const bw = 320, bh = 70, bx = W / 2 - bw / 2, by = H - 80;
   if (ready[me]) { drawBigBtn(ctx, bx, by, bw, bh, '✓ READY', '#52ff9d', t, true, 26); return; }
@@ -1300,7 +1309,7 @@ function crtFx(ctx, t) {
   ctx.restore();
 }
 
-function drawTitle(ctx, boardIdx, t, mode) {
+function drawTitle(ctx, t, mode, best) {
   ctx.fillStyle = '#06060f';
   ctx.fillRect(0, 0, W, H);
 
@@ -1325,33 +1334,370 @@ function drawTitle(ctx, boardIdx, t, mode) {
   logoSweep(ctx, t);
   glowText(ctx, 'REAL-TIME NUMBER COMBAT', W / 2, 445, 19, 'rgba(232,246,255,0.65)', 6);
 
-  // game-mode slider: real-time vs turn-based
-  const sw = 460, sh = 60, sx = W / 2 - sw / 2, sy = 468;
+  // 1) game mode: real-time vs turn-based (applies to campaign and VS alike)
+  glowText(ctx, '1 · MODE', W / 2, 560, 22, '#ffd23f', 10);
+  const sw = 640, sh = 90, sx = W / 2 - sw / 2, sy = 595;
   ctx.save();
   ctx.fillStyle = '#0c0e20';
   ctx.strokeStyle = 'rgba(110,140,255,0.35)';
   ctx.lineWidth = 2;
-  rr(ctx, sx, sy, sw, sh, 16); ctx.fill(); ctx.stroke();
+  rr(ctx, sx, sy, sw, sh, 20); ctx.fill(); ctx.stroke();
   ctx.restore();
   const segs = [['REAL-TIME', 'rts', '#19e6ff'], ['TURN-BASED', 'turn', '#ffd23f']];
   for (let i = 0; i < 2; i++) {
     const label = segs[i][0], m = segs[i][1], col = segs[i][2];
-    const x = sx + 6 + i * (sw / 2 - 3), w = sw / 2 - 9, y = sy + 6, h = sh - 12, on = mode === m;
+    const x = sx + 8 + i * (sw / 2 - 4), w = sw / 2 - 12, y = sy + 8, h = sh - 16, on = mode === m;
     if (on) {
       ctx.save();
-      ctx.fillStyle = col; ctx.globalAlpha = 0.16; rr(ctx, x, y, w, h, 12); ctx.fill();
-      ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = 2;
-      ctx.shadowColor = col; ctx.shadowBlur = 10 * window.TWEAKS.glow; rr(ctx, x, y, w, h, 12); ctx.stroke();
+      ctx.fillStyle = col; ctx.globalAlpha = 0.16; rr(ctx, x, y, w, h, 14); ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = 3;
+      ctx.shadowColor = col; ctx.shadowBlur = 10 * window.TWEAKS.glow; rr(ctx, x, y, w, h, 14); ctx.stroke();
       ctx.restore();
     }
-    glowText(ctx, label, x + w / 2, y + h / 2 + 1, 16, on ? col : 'rgba(232,246,255,0.5)', on ? 8 : 0);
+    glowText(ctx, label, x + w / 2, y + h / 2 + 1, 22, on ? col : 'rgba(232,246,255,0.5)', on ? 8 : 0);
     UI.buttons.push({ x, y, w, h, action: () => ACTIONS.setMode(m) });
   }
 
-  glowText(ctx, 'CHOOSE ARENA', W / 2, 552, 24, '#ffd23f', 10);
+  // 2) campaign or versus
+  glowText(ctx, '2 · PLAY', W / 2, 800, 22, '#ffd23f', 10);
+  const bw = 760, bh = 170, bx = W / 2 - bw / 2;
+  drawBigBtn(ctx, bx, 840, bw, bh, 'CAMPAIGN', '#52ff9d', t, false, 40);
+  glowText(ctx, best > 0 ? 'BEST ' + best : 'BEAT 10 CPUS · TOP THE BOARD', W / 2, 840 + bh - 36, 15, 'rgba(232,246,255,0.6)', 4);
+  UI.buttons.push({ x: bx, y: 840, w: bw, h: bh, action: ACTIONS.menuCampaign });
+  drawBigBtn(ctx, bx, 1040, bw, bh, 'VS', '#ff3df0', t, false, 40);
+  glowText(ctx, 'ARENAS · 2P · ONLINE · AI', W / 2, 1040 + bh - 36, 15, 'rgba(232,246,255,0.6)', 4);
+  UI.buttons.push({ x: bx, y: 1040, w: bw, h: bh, action: ACTIONS.menuVs });
+
+  ctx.font = '14px ' + FONT;
+  ctx.fillStyle = 'rgba(232,246,255,0.45)';
+  ctx.textAlign = 'center';
+  ctx.fillText('By PKZIPYA     Version #: ' + APP_VER, W / 2, H - 60);
+
+  scanlines(ctx);
+  crtFx(ctx, t);
+}
+
+// ---------- campaign ----------
+const TIER_COLORS = { 'cpu-easy': '#52ff9d', 'cpu-normal': '#19e6ff', 'cpu-hard': '#ffd23f', 'cpu-veryhard': '#ff8c3d', 'cpu-inhuman': '#ff3d5a' };
+const modeLabel = (m) => (m === 'turn' ? 'TURN-BASED' : 'REAL-TIME');
+const modeColor = (m) => (m === 'turn' ? '#ffd23f' : '#19e6ff');
+
+const KIND_COLORS = { lesson: '#52ff9d', puzzle: '#19e6ff' };
+const levelColor = (L) => (L.kind === 'battle' ? TIER_COLORS[L.ai] || '#ffd23f' : KIND_COLORS[L.kind] || '#aebcff');
+const kindLabel = (k) => (k === 'lesson' ? 'TRAINING' : k === 'puzzle' ? 'PUZZLES' : 'BATTLES');
+const kindOne = (k) => (k === 'lesson' ? 'TRAINING' : k === 'puzzle' ? 'PUZZLE' : 'BATTLE');
+
+function drawCampMenu(ctx, t, mode, best) {
+  ctx.fillStyle = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+  drawStars(ctx, t);
+  const levels = CAMPAIGN.levels(mode);
+
+  glowText(ctx, 'CAMPAIGN', W / 2, 105, 52, '#52ff9d', 20);
+  glowText(ctx, modeLabel(mode), W / 2, 168, 22, modeColor(mode), 8);
+  glowText(ctx, mode === 'turn' ? 'CHESS-STYLE PUZZLES, THEN REAL GAMES' : 'LEARN THE ROPES, THEN FIGHT', W / 2, 208, 15, 'rgba(232,246,255,0.6)', 4);
+  glowText(ctx, levels.length + ' LEVELS · ' + CAMPAIGN.LIVES + ' LIVES FOR BATTLES', W / 2, 238, 13, 'rgba(232,246,255,0.45)', 3);
+
+  // the ladder, with a small header whenever the kind of level changes
+  const rw = 940, rh = 54, gap = 6, x = (W - rw) / 2;
+  let y = 268, lastKind = null;
+  levels.forEach((L, i) => {
+    if (L.kind !== lastKind) {
+      lastKind = L.kind;
+      glowText(ctx, kindLabel(L.kind), x + 6, y + 14, 14, 'rgba(232,246,255,0.5)', 0, 'left');
+      y += 30;
+    }
+    const col = levelColor(L);
+    ctx.save();
+    ctx.fillStyle = '#0c0e20';
+    ctx.strokeStyle = col;
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = 2;
+    rr(ctx, x, y, rw, rh, 10); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    glowText(ctx, String(i + 1).padStart(2, '0'), x + 46, y + rh / 2 + 1, 20, col, 5);
+    glowText(ctx, L.name, x + 96, y + rh / 2 + 1, 17, col, 3, 'left');
+    glowText(ctx, L.tag, x + rw - 22, y + rh / 2 + 1, 13, 'rgba(232,246,255,0.6)', 0, 'right');
+    y += rh + gap;
+  });
+
+  y += 12;
+  glowText(ctx, best > 0 ? 'YOUR BEST  ' + best : 'NO SCORE YET', W / 2, y + 10, 22, '#ffd23f', 8);
+  y += 56;
+  const bw = 760, bx = W / 2 - bw / 2;
+  drawBigBtn(ctx, bx, y, bw, 120, 'START', '#52ff9d', t, false, 34);
+  UI.buttons.push({ x: bx, y, w: bw, h: 120, action: ACTIONS.campStart });
+  y += 138;
+  drawBigBtn(ctx, bx, y, bw, 100, 'LEADERBOARD', '#ffd23f', t, true, 26);
+  UI.buttons.push({ x: bx, y, w: bw, h: 100, action: ACTIONS.campBoard });
+  y += 118;
+  drawBigBtn(ctx, W / 2 - 220, y, 440, 84, '◀ BACK', '#aebcff', t, true, 20);
+  UI.buttons.push({ x: W / 2 - 220, y, w: 440, h: 84, action: ACTIONS.menuBack });
+
+  scanlines(ctx);
+  crtFx(ctx, t);
+}
+
+function drawHearts(ctx, cx, cy, have, total) {
+  const gap = 78, x0 = cx - ((total - 1) * gap) / 2;
+  for (let i = 0; i < total; i++) {
+    const on = i < have;
+    ctx.save();
+    ctx.globalAlpha = on ? 1 : 0.22;
+    ctx.fillStyle = '#ff5577';
+    ctx.shadowColor = '#ff5577';
+    ctx.shadowBlur = on ? 10 * window.TWEAKS.glow : 0;
+    drawPowerGlyph(ctx, 'heart', x0 + i * gap, cy, 44);
+    ctx.restore();
+  }
+}
+
+// a little picture of a level's layout: walls, castles and the starting pieces (or just the arena for a battle)
+function drawLevelMini(ctx, L, x, y, cs) {
+  if (L.kind === 'battle') { drawMiniMap(ctx, BOARDS[L.board], x, y, cs); return; }
+  ctx.fillStyle = 'rgba(110,140,255,0.12)';
+  ctx.fillRect(x - 3, y - 3, COLS * cs + 6, ROWS * cs + 6);
+  ctx.fillStyle = '#3a4070';
+  for (const [c, r] of L.walls || []) ctx.fillRect(x + c * cs, y + r * cs, cs - 1, cs - 1);
+  for (const [k, row] of [[0, 11], [1, 1]]) {
+    ctx.strokeStyle = PLAYER_COLORS[k]; ctx.lineWidth = 2;
+    ctx.strokeRect(x + 4 * cs + 1, y + row * cs + 1, cs - 3, cs - 3);
+  }
+  for (const u of L.powerups || []) {
+    ctx.fillStyle = POWER_COLORS[u.type] || '#fff';
+    ctx.beginPath(); ctx.arc(x + (u.c + 0.5) * cs, y + (u.r + 0.5) * cs, cs * 0.32, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.font = Math.max(9, cs - 5) + 'px ' + FONT;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const [owner, list] of [[0, L.you || []], [1, L.foe || []]]) {
+    for (const [c, r, v] of list) {
+      ctx.fillStyle = PLAYER_COLORS[owner];
+      ctx.fillRect(x + c * cs, y + r * cs, cs - 1, cs - 1);
+      ctx.fillStyle = '#06060f';
+      ctx.fillText(String(v), x + (c + 0.5) * cs, y + (r + 0.5) * cs + 1);
+    }
+  }
+}
+
+// between levels: what's next, where, lives and score so far
+function drawCampIntro(ctx, t, camp) {
+  ctx.fillStyle = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+  drawStars(ctx, t);
+  const levels = CAMPAIGN.levels(camp.mode), n = levels.length, L = levels[camp.stage];
+  const col = levelColor(L);
+
+  glowText(ctx, 'LEVEL ' + (camp.stage + 1) + ' / ' + n, W / 2, 130, 42, '#52ff9d', 16);
+  glowText(ctx, modeLabel(camp.mode) + ' · ' + kindOne(L.kind), W / 2, 192, 18, modeColor(camp.mode), 8);
+
+  glowText(ctx, L.name, W / 2, 290, 44, col, 16);
+  glowText(ctx, L.tag, W / 2, 346, 18, 'rgba(232,246,255,0.65)', 4);
+  glowText(ctx, 'GOAL', W / 2, 420, 16, 'rgba(232,246,255,0.5)', 3);
+  glowText(ctx, L.goal, W / 2, 458, 18, '#ffd23f', 6);
+  if (L.limit) glowText(ctx, 'WITHIN ' + L.limit + ' TURNS', W / 2, 498, 18, '#ff8c3d', 6);
+  const cs = 22;
+  drawLevelMini(ctx, L, W / 2 - (COLS * cs) / 2, 535, cs);
+
+  const yb = 535 + ROWS * cs + 70;
+  if (L.free) glowText(ctx, 'NO LIVES AT RISK · TRY AS OFTEN AS YOU LIKE', W / 2, yb, 14, '#52ff9d', 3);
+  else {
+    glowText(ctx, 'LIVES', W / 2 - 230, yb, 18, 'rgba(232,246,255,0.55)', 4);
+    drawHearts(ctx, W / 2 + 120, yb, camp.lives, CAMPAIGN.LIVES);
+  }
+  glowText(ctx, 'SCORE', W / 2 - 230, yb + 90, 18, 'rgba(232,246,255,0.55)', 4);
+  glowText(ctx, String(camp.score), W / 2 + 120, yb + 90, 34, '#ffd23f', 10);
+
+  const bw = 760, bx = W / 2 - bw / 2;
+  const fy = yb + 150;
+  drawBigBtn(ctx, bx, fy, bw, 130, 'FIGHT', col, t, false, 40);
+  UI.buttons.push({ x: bx, y: fy, w: bw, h: 130, action: ACTIONS.campFight });
+  const qy = Math.max(fy + 170, 1370); // clear of the result panel's button, which sits at the same spot one screen earlier
+  drawBigBtn(ctx, W / 2 - 220, qy, 440, 90, window.quitArmed && window.quitArmed() ? 'TAP AGAIN TO QUIT' : 'QUIT RUN', '#ff5566', t, true, 20);
+  UI.buttons.push({ x: W / 2 - 220, y: qy, w: 440, h: 90, action: ACTIONS.campQuit });
+
+  scanlines(ctx);
+  crtFx(ctx, t);
+}
+
+// --- in-match: level name / goal / turn counter, and the coach card pop-up ---
+function drawLevelHud(ctx, g, camp, t) {
+  if (g.over) return;
+  const L = camp.lvl;
+  // (below the opponent's name + energy bar, which fill the top ~105px)
+  glowText(ctx, 'LEVEL ' + (camp.stage + 1) + ' · ' + L.name, W / 2, 124, 14, 'rgba(232,246,255,0.55)', 0);
+  glowText(ctx, L.goal, W / 2, 148, 15, '#ffd23f', 4);
+}
+
+function drawCoach(ctx, coach, t) {
+  const card = coach.cards[coach.i];
+  ctx.save();
+  ctx.fillStyle = 'rgba(4,4,14,0.8)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  const col = card.col || '#52ff9d';
+  const pw = 900, ph = (card.art ? 330 : 190) + card.lines.length * 52 + 130, px = (W - pw) / 2, py = H / 2 - ph / 2 - 30;
+  ctx.save();
+  ctx.fillStyle = '#0c0e22';
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 5;
+  ctx.shadowColor = col;
+  ctx.shadowBlur = 18 * window.TWEAKS.glow;
+  rr(ctx, px, py, pw, ph, 24); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  let y = py + 90;
+  if (card.art) {
+    ctx.save();
+    ctx.fillStyle = col; ctx.shadowColor = col; ctx.shadowBlur = 14 * window.TWEAKS.glow;
+    ctx.translate(W / 2, py + 100); ctx.rotate(Math.PI / 4);
+    ctx.strokeStyle = col; ctx.lineWidth = 4; ctx.fillStyle = '#10122a';
+    rr(ctx, -44, -44, 88, 88, 14); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = col; ctx.shadowColor = col; ctx.shadowBlur = 8 * window.TWEAKS.glow;
+    drawPowerGlyph(ctx, card.art, W / 2, py + 100, 56);
+    ctx.restore();
+    y = py + 230;
+  }
+  glowText(ctx, 'COACH', W / 2, py + 34, 13, 'rgba(232,246,255,0.4)', 0);
+  glowText(ctx, card.title, W / 2, y, 36, col, 14);
+  y += 90;
+  for (const line of card.lines) { glowText(ctx, line, W / 2, y, 21, '#e8f6ff', 4); y += 52; }
+  const n = coach.cards.length;
+  if (n > 1) glowText(ctx, (coach.i + 1) + ' / ' + n, W / 2, py + ph - 100, 14, 'rgba(232,246,255,0.45)', 0);
+  const pulse = 0.55 + 0.45 * Math.sin(t * 5);
+  ctx.save(); ctx.globalAlpha = pulse;
+  glowText(ctx, coach.i + 1 < n ? 'TAP TO CONTINUE ▶' : 'TAP TO START ▶', W / 2, py + ph - 48, 18, col, 8);
+  ctx.restore();
+  UI.buttons.push({ x: 0, y: 0, w: W, h: H, abs: true, action: ACTIONS.coachNext });
+}
+
+// arcade initials entry for a run that earned a leaderboard place
+function drawNameEntry(ctx, t, chars, camp) {
+  ctx.fillStyle = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+  drawStars(ctx, t);
+  glowText(ctx, camp.won ? 'CAMPAIGN CLEAR!' : 'NEW HIGH SCORE', W / 2, 190, 44, '#ffd23f', 18);
+  glowText(ctx, String(camp.score), W / 2, 330, 80, '#52ff9d', 24);
+  glowText(ctx, 'LEVELS CLEARED  ' + camp.cleared + ' / ' + CAMPAIGN.levels(camp.mode).length, W / 2, 420, 18, 'rgba(232,246,255,0.65)', 4);
+  glowText(ctx, 'ENTER YOUR INITIALS', W / 2, 520, 22, '#aebcff', 8);
+
+  const bw = 170, gap = 30, x0 = (W - (3 * bw + 2 * gap)) / 2;
+  for (let i = 0; i < 3; i++) {
+    const x = x0 + i * (bw + gap);
+    drawBigBtn(ctx, x, 570, bw, 100, '▲', '#aebcff', t, true, 34);
+    UI.buttons.push({ x, y: 570, w: bw, h: 100, action: () => ACTIONS.nameCycle(i, 1) });
+    ctx.save();
+    ctx.fillStyle = '#10122a';
+    ctx.strokeStyle = '#ffd23f';
+    ctx.lineWidth = 5;
+    ctx.shadowColor = '#ffd23f';
+    ctx.shadowBlur = 14 * window.TWEAKS.glow;
+    rr(ctx, x, 690, bw, 190, 18); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    glowText(ctx, chars[i], x + bw / 2, 690 + 98, 90, '#ffd23f', 14);
+    drawBigBtn(ctx, x, 900, bw, 100, '▼', '#aebcff', t, true, 34);
+    UI.buttons.push({ x, y: 900, w: bw, h: 100, action: () => ACTIONS.nameCycle(i, -1) });
+  }
+  const bx = W / 2 - 240;
+  drawBigBtn(ctx, bx, 1080, 480, 120, 'OK', '#52ff9d', t, false, 34);
+  UI.buttons.push({ x: bx, y: 1080, w: 480, h: 120, action: ACTIONS.nameOk });
+  drawBigBtn(ctx, bx, 1380, 480, 90, 'SKIP', '#aebcff', t, true, 20);
+  UI.buttons.push({ x: bx, y: 1380, w: 480, h: 90, action: ACTIONS.nameSkip });
+
+  scanlines(ctx);
+  crtFx(ctx, t);
+}
+
+function drawLeaderboard(ctx, t, mode, list, hiT) {
+  ctx.fillStyle = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+  drawStars(ctx, t);
+  glowText(ctx, 'LEADERBOARD', W / 2, 120, 50, '#ffd23f', 18);
+
+  // one board per mode
+  const tw = 420, th = 80, tg = 20, tx0 = (W - (2 * tw + tg)) / 2;
+  [['REAL-TIME', 'rts', '#19e6ff'], ['TURN-BASED', 'turn', '#ffd23f']].forEach(([label, m, col], i) => {
+    const x = tx0 + i * (tw + tg), on = mode === m;
+    drawBigBtn(ctx, x, 190, tw, th, label, on ? col : 'rgba(110,140,255,0.4)', t, !on, 20);
+    UI.buttons.push({ x, y: 190, w: tw, h: th, action: () => ACTIONS.lbMode(m) });
+  });
+
+  const rw = 900, rh = 100, gap = 10, x = (W - rw) / 2;
+  let y = 320;
+  for (let i = 0; i < CAMPAIGN.LB_MAX; i++) {
+    const e = list[i];
+    const hi = e && hiT != null && e.t === hiT;
+    const col = hi ? '#52ff9d' : i === 0 ? '#ffd23f' : i < 3 ? '#e8f6ff' : '#aebcff';
+    ctx.save();
+    ctx.fillStyle = hi ? '#10281f' : '#0c0e20';
+    ctx.strokeStyle = e ? col : 'rgba(110,140,255,0.18)';
+    ctx.lineWidth = hi ? 4 : 2;
+    if (hi) { ctx.shadowColor = col; ctx.shadowBlur = 14 * window.TWEAKS.glow; }
+    rr(ctx, x, y, rw, rh, 14); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    glowText(ctx, String(i + 1), x + 50, y + rh / 2 + 1, 26, e ? col : 'rgba(110,140,255,0.3)', e ? 6 : 0);
+    if (e) {
+      glowText(ctx, e.n, x + 150, y + rh / 2 + 1, 34, col, 8, 'left');
+      glowText(ctx, e.cl ? 'CLEARED' : 'LEVEL ' + e.st + '/' + CAMPAIGN.levels(mode).length, x + 400, y + rh / 2 + 1, 16, e.cl ? '#52ff9d' : 'rgba(232,246,255,0.55)', 4, 'left');
+      glowText(ctx, String(e.s), x + rw - 36, y + rh / 2 + 1, 32, col, 8, 'right');
+    }
+    y += rh + gap;
+  }
+  if (!list.length) glowText(ctx, 'NO SCORES YET', W / 2, 320 + 3 * (rh + gap) - 40, 26, 'rgba(232,246,255,0.7)', 6);
+  y += 20;
+  drawBigBtn(ctx, W / 2 - 220, y, 440, 90, '◀ BACK', '#aebcff', t, true, 20);
+  UI.buttons.push({ x: W / 2 - 220, y, w: 440, h: 90, action: ACTIONS.lbBack });
+
+  scanlines(ctx);
+  crtFx(ctx, t);
+}
+
+// end-of-stage panel (replaces REMATCH / CHANGE ARENA during a campaign run)
+function drawCampResult(ctx, camp, t) {
+  const r = camp.result;
+  const heads = {
+    win: ['LEVEL CLEAR!', '#52ff9d'], clear: ['CAMPAIGN CLEAR!', '#ffd23f'], lose: [r.why || 'DEFEATED', '#ff5566'],
+    gameover: ['GAME OVER', '#ff5566'], draw: ['DRAW', '#ffd23f'], retry: [r.why || 'TRY AGAIN', '#ffd23f'],
+  };
+  const [head, col] = heads[r.kind];
+  glowText(ctx, head, W / 2, H / 2 - 360, 54, col, 26);
+  if (r.kind === 'draw') glowText(ctx, 'NO LIFE LOST · REPLAY', W / 2, H / 2 - 280, 20, 'rgba(232,246,255,0.7)', 6);
+  else if (r.kind === 'lose') glowText(ctx, 'LIVES LEFT  ' + camp.lives, W / 2, H / 2 - 280, 22, '#ff5577', 8);
+  else if (r.kind === 'retry') glowText(ctx, 'NO LIFE LOST · TRY AGAIN', W / 2, H / 2 - 280, 20, 'rgba(232,246,255,0.7)', 6);
+
+  let y = H / 2 - 220;
+  const row = (label, val, c, size) => {
+    glowText(ctx, label, W / 2 - 300, y, size || 22, 'rgba(232,246,255,0.7)', 4, 'left');
+    glowText(ctx, (val < 0 ? '' : '+') + val, W / 2 + 300, y, size || 22, c || (val < 0 ? '#ff5577' : '#e8f6ff'), 6, 'right');
+    y += 62;
+  };
+  if (r.rows) {
+    for (const [label, val] of r.rows) row(label, val);
+    if (r.bonus) row('LIVES BONUS', r.bonus, '#ffd23f');
+  }
+  y += 10;
+  glowText(ctx, 'SCORE', W / 2 - 300, y + 20, 26, '#ffd23f', 8, 'left');
+  glowText(ctx, String(camp.score), W / 2 + 300, y + 20, 44, '#ffd23f', 14, 'right');
+
+  const label = r.kind === 'win' ? 'NEXT LEVEL' : r.kind === 'lose' || r.kind === 'draw' || r.kind === 'retry' ? 'RETRY' : 'CONTINUE';
+  const bw = 520, bh = 120, by = H / 2 + 250;
+  drawBigBtn(ctx, W / 2 - bw / 2, by, bw, bh, label, col, t, false, 30);
+  UI.buttons.push({ x: W / 2 - bw / 2, y: by, w: bw, h: bh, abs: true, action: ACTIONS.campNext });
+}
+
+function drawVs(ctx, boardIdx, t, mode) {
+  ctx.fillStyle = '#06060f';
+  ctx.fillRect(0, 0, W, H);
+
+  drawStars(ctx, t);
+
+  glowText(ctx, 'VS MODE', W / 2, 110, 46, '#19e6ff', 18);
+  const mCol = mode === 'turn' ? '#ffd23f' : '#19e6ff';
+  glowText(ctx, mode === 'turn' ? 'TURN-BASED' : 'REAL-TIME', W / 2, 170, 20, mCol, 8);
+  glowText(ctx, 'CHOOSE ARENA', W / 2, 250, 24, '#ffd23f', 10);
 
   const bw = 880, bh = 88, gap = 10;
-  let y = 585;
+  let y = 285;
   BOARDS.forEach((b, i) => {
     const x = (W - bw) / 2;
     const on = i === boardIdx;
@@ -1375,7 +1721,7 @@ function drawTitle(ctx, boardIdx, t, mode) {
   });
 
   // how to play
-  y += 14;
+  y += 34;
   const lines = [
     ['TAP YOUR PIECE, TAP A GLOWING CELL', '#e8f6ff'],
     ['LOW NUMBERS RUN FAR AND FAST', '#19e6ff'],
@@ -1454,10 +1800,9 @@ function drawTitle(ctx, boardIdx, t, mode) {
   UI.buttons.push({ x: bx0, y, w: hw, h: 96, action: ACTIONS.createOnline });
   drawBigBtn(ctx, bx0 + sw2 - hw, y, hw, 96, 'JOIN ONLINE', '#ff3df0', t, true, 22);
   UI.buttons.push({ x: bx0 + sw2 - hw, y, w: hw, h: 96, action: ACTIONS.joinOnline });
-  ctx.font = '14px ' + FONT;
-  ctx.fillStyle = 'rgba(232,246,255,0.45)';
-  ctx.textAlign = 'center';
-  ctx.fillText('By PKZIPYA     Version #: ' + APP_VER, W / 2, y + 96 + 24);
+  y += 96 + 28;
+  drawBigBtn(ctx, W / 2 - 220, y, 440, 90, '◀ BACK', '#aebcff', t, true, 20);
+  UI.buttons.push({ x: W / 2 - 220, y, w: 440, h: 90, action: ACTIONS.menuBack });
 
   scanlines(ctx);
   crtFx(ctx, t);
@@ -1636,4 +1981,4 @@ function drawInvite(ctx, code, t) {
   scanlines(ctx);
 }
 
-Object.assign(window, { W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawDragTrail, drawSplitUI, drawTitle, drawPicker, drawLobby, drawJoin, drawInvite, drawOverlayMsg });
+Object.assign(window, { drawLevelHud, drawCoach, drawLevelMini, W, H, CELL, BX, BY, PLAYER_COLORS, drawGame, drawDragTrail, drawSplitUI, drawTitle, drawVs, drawCampMenu, drawCampIntro, drawNameEntry, drawLeaderboard, drawPicker, drawLobby, drawJoin, drawInvite, drawOverlayMsg });

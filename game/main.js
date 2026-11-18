@@ -3,13 +3,14 @@
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
-  let screen = 'title'; // title | lobby | join | game | picker
+  let screen = 'title'; // title | vs | camp | campintro | nameentry | lb | lobby | join | invite | game | picker
   let picker = null;    // { title, options: [rosterIds], onPick }
   // storage can throw (private mode, blocked site data): the game must still start
   const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
   let watchBottom = null;
   let boardIdx = Math.min(BOARDS.length - 1, Math.max(0, parseInt(lsGet('cc-board') || '0', 10) || 0));
+  let prefBoard = boardIdx; // the arena the player picked in the VS menu (a campaign borrows boardIdx per stage)
   let g = null;
   let paused = false;
   let netLost = false;
@@ -31,7 +32,36 @@
   // (not to whichever selected piece is nearer, which moved the wrong side)
   let lastSelPl = null;
 
+  // ---- campaign ----
+  // camp = { mode, stage, lives, score, cleared, won, result } while a run is on
+  // ({kind: win|lose|draw|clear|gameover} appears when a stage ends); window.CAMP
+  // mirrors it for the renderer.
+  let camp = null;
+  function setCamp(v) { camp = v; window.CAMP = v; }
+  window.CAMP = null;
+  let campBest = 0;           // best score for the current mode, shown on menus
+  let lbMode = gameMode;      // which leaderboard tab is showing
+  let lbList = [];
+  let lbHi = null;            // timestamp of the entry just added (highlighted)
+  let nameChars = [0, 0, 0];  // initials as 0..35 (A-Z, 0-9)
+  const NAME_SET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const nameStr = () => nameChars.map((i) => NAME_SET[i]).join('');
+  function refreshBest() { campBest = CAMPAIGN.best(gameMode); }
+  function refreshLb() { lbList = CAMPAIGN.loadBoard(lbMode); }
+  refreshBest();
+  // A double-tap must never fire a different button that the next screen puts under the
+  // same spot (NEXT STAGE -> QUIT RUN, CONTINUE -> SKIP...): after any menu / campaign
+  // screen change, taps are ignored for a moment. QUIT RUN also needs a second, deliberate tap.
+  const UI_LOCK_MS = 450;
+  let uiKey = '', uiLockUntil = 0, quitArmUntil = 0;
+  window.quitArmed = () => performance.now() < quitArmUntil;
+
   window.UI = { buttons: [] };
+
+  // test hook: only with ?debug in the URL — lets automated checks reach the match and campaign state
+  if (/[?&]debug\b/.test(location.search)) {
+    window.__cc = { get g() { return g; }, get camp() { return camp; }, get screen() { return screen; } };
+  }
 
   // Android edge-swipe / back gesture fires popstate, which would otherwise
   // quit the game. Push a guard entry so a stray back is captured by popstate
@@ -45,8 +75,10 @@
     try { history.pushState({ cc: 'game' }, ''); guardOn = true; } catch (e) {}
   }
 
-  function startGame() {
-    g = makeGame(boardIdx);
+  function startGame(lvl) {
+    // a campaign lesson / puzzle is a hand-built position; everything else is a normal match on the chosen arena
+    g = lvl && lvl.kind !== 'battle' ? makeLevelGame(CAMPAIGN.levelSpec(lvl, gameMode)) : makeGame(boardIdx);
+    if (lvl && lvl.limit && gameMode === 'turn') g.limit = lvl.limit;
     g.mode = gameMode;              // host/solo/2P; an online guest is overridden by the host's start packet
     if (g.mode === 'turn') initTurnState();
     paused = false;
@@ -60,7 +92,7 @@
   // (re)enter a planning phase: fresh 30s clock, empty order book, clean fx
   function initTurnState() {
     g.phase = 'plan';
-    g.planT = PLAN_SECS;
+    g.planT = g.rules && g.rules.noTimer ? 9999 : PLAN_SECS;
     g.resolveT = 0;
     g.orders = {};
     g.ready = [false, false];       // online: each side's "GO" flag (resolve when both, or timer)
@@ -83,7 +115,9 @@
     guestGoTurn = -1;
     setSplit(null);
     drags.clear();
-    screen = 'title';
+    setCamp(null);
+    boardIdx = prefBoard;
+    screen = 'vs'; // everything that calls this (match over, lobby cancelled) came from the VS menu
   }
 
   function startSinglePlayer(id) {
@@ -100,6 +134,81 @@
     SFX.select();
     AI.startWatch(bottomId, topId);
     startGame();
+  }
+
+  // ---- coach cards: short pop-up lessons that freeze the match until tapped ----
+  let coach = null;       // { cards:[{title,lines,art?}], i, at }
+  let coachFlags = {};    // triggers already fired this attempt
+  window.COACH = null;
+  function showCards(cards) {
+    if (!cards || !cards.length) return;
+    if (coach) { coach.cards = coach.cards.concat(cards); return; }
+    coach = { cards: cards.slice(), i: 0, at: performance.now() };
+    window.COACH = coach;
+    SFX.select();
+  }
+  function coachCards(lvl, on) {
+    const out = [];
+    for (const c of lvl.coach || []) if (c.on === on) out.push(...c.cards);
+    return out;
+  }
+  // each frame while playing a campaign level: lessons that react to what just happened
+  function coachTick() {
+    const lvl = camp.lvl;
+    if (!lvl) return;
+    // the first time a pickup type is on the board in this run, say what it does
+    for (const u of g.powerups) {
+      const info = CAMPAIGN.POWER_INFO[u.type];
+      if (info && !camp.seen['power:' + u.type]) {
+        camp.seen['power:' + u.type] = true;
+        showCards([{ title: info.title, lines: info.lines, art: u.type, col: info.col }]);
+        return;
+      }
+    }
+    if (!coachFlags.camp && g.pieces.some((p) => p.owner === 0 && !p.path && p.col === 4 && p.row === 1)) {
+      coachFlags.camp = true;
+      showCards(coachCards(lvl, 'camp'));
+    }
+    if (g.mode === 'turn' && g.phase === 'plan' && coachFlags.turn !== g.turnNo) {
+      coachFlags.turn = g.turnNo;
+      if (g.turnNo > 1) showCards(coachCards(lvl, 'turn:' + g.turnNo));
+    }
+  }
+
+  // the stage just ended (g.over): score it, spend a life on a loss
+  function finishStage() {
+    const w = g.winner, lvl = camp.lvl, levels = CAMPAIGN.levels(camp.mode);
+    if (w === 0) {
+      const sc = CAMPAIGN.levelScore(g, lvl, camp.stage, camp.mode, camp.tries);
+      camp.score += sc.total;
+      camp.cleared = camp.stage + 1;
+      const last = camp.stage === levels.length - 1;
+      let bonus = 0;
+      if (last) { bonus = CAMPAIGN.clearBonus(camp.lives); camp.score += bonus; camp.won = true; }
+      camp.result = { kind: last ? 'clear' : 'win', rows: sc.rows, bonus };
+    } else if (w === 1) {
+      camp.tries++;
+      const why = g.timeUp ? 'OUT OF TURNS' : 'DEFEATED';
+      if (lvl.free) camp.result = { kind: 'retry', why }; // lessons and puzzles: retry as often as you like
+      else {
+        camp.lives = Math.max(0, camp.lives - 1);
+        camp.result = { kind: camp.lives > 0 ? 'lose' : 'gameover', why };
+      }
+    } else {
+      camp.result = { kind: 'draw' }; // level finish: replay the level, no life lost
+    }
+  }
+
+  // run is over (cleared or out of lives): name entry if the score places
+  function finishRun() {
+    AI.stop(); g = null; paused = false; boardIdx = prefBoard;
+    if (CAMPAIGN.qualifies(camp.mode, camp.score)) {
+      const saved = lsGet('cc-lb-name') || 'AAA';
+      nameChars = [0, 1, 2].map((i) => Math.max(0, NAME_SET.indexOf(CAMPAIGN.cleanName(saved)[i] || 'A')));
+      screen = 'nameentry';
+    } else {
+      lbMode = camp.mode; lbHi = null; refreshLb(); setCamp(null); screen = 'lb';
+    }
   }
 
   window.ACTIONS = {
@@ -119,13 +228,13 @@
       watchBottom = null;
       picker = {
         title: 'PLAYER 1 · BOTTOM',
-        options: AI.ROSTER.map((r) => r.id),
+        options: AI.ROSTER.filter((r) => !r.hidden).map((r) => r.id),
         onPick: (id) => {
           watchBottom = id;
           SFX.cursor();
           picker = {
             title: 'PLAYER 2 · TOP',
-            options: AI.ROSTER.map((r) => r.id),
+            options: AI.ROSTER.filter((r) => !r.hidden).map((r) => r.id),
             onPick: (topId) => startWatch(watchBottom, topId),
           };
         },
@@ -133,9 +242,71 @@
       screen = 'picker';
     },
     pickerChoose: (i) => { if (picker) picker.onPick(picker.options[i]); },
-    pickerBack: () => { SFX.cursor(); picker = null; screen = 'title'; },
-    pickBoard: (i) => { boardIdx = i; lsSet('cc-board', String(i)); SFX.cursor(); },
-    setMode: (m) => { gameMode = m === 'turn' ? 'turn' : 'rts'; window.CC_MODE = gameMode; lsSet('cc-mode', gameMode); SFX.cursor(); },
+    pickerBack: () => { SFX.cursor(); picker = null; screen = 'vs'; },
+    pickBoard: (i) => { boardIdx = prefBoard = i; lsSet('cc-board', String(i)); SFX.cursor(); },
+    setMode: (m) => { gameMode = m === 'turn' ? 'turn' : 'rts'; window.CC_MODE = gameMode; lsSet('cc-mode', gameMode); lbMode = gameMode; refreshBest(); SFX.cursor(); },
+    // ---- top-level menu ----
+    menuVs: () => { SFX.cursor(); screen = 'vs'; },
+    menuCampaign: () => { SFX.cursor(); refreshBest(); screen = 'camp'; },
+    menuBack: () => { SFX.cursor(); picker = null; screen = 'title'; },
+    // ---- campaign ----
+    campStart: () => {
+      NET.leave(); AI.stop(); SFX.select();
+      setCamp({ mode: gameMode, stage: 0, lives: CAMPAIGN.LIVES, score: 0, cleared: 0, won: false, result: null, tries: 0, seen: {}, lvl: null });
+      screen = 'campintro';
+    },
+    campFight: () => {
+      if (!camp) return;
+      const lvl = CAMPAIGN.levels(camp.mode)[camp.stage];
+      if (!lvl) return;
+      NET.leave(); SFX.select();
+      camp.lvl = lvl; camp.result = null;
+      coachFlags = {}; coach = null; window.COACH = null;
+      if (lvl.kind === 'battle') {
+        AI.startSingle(lvl.ai);
+        boardIdx = lvl.board;
+        startGame(lvl);
+      } else {
+        AI.startSingle(lvl.script ? 'cpu-script' : (lvl.ai || 'cpu-still'), { script: lvl.script, name: lvl.kind === 'puzzle' ? 'PUZZLE' : (lvl.foe && lvl.foe.length ? 'DUMMY' : 'TARGET') });
+        startGame(lvl);
+      }
+      showCards(coachCards(lvl, 'start'));
+    },
+    campNext: () => {
+      if (!camp || !camp.result) return;
+      SFX.select();
+      const k = camp.result.kind;
+      if (k === 'win') { camp.stage++; camp.tries = 0; camp.result = null; AI.stop(); g = null; screen = 'campintro'; }
+      else if (k === 'lose' || k === 'draw' || k === 'retry') { camp.result = null; AI.stop(); g = null; screen = 'campintro'; }
+      else finishRun();
+    },
+    // leave the run (pause menu, stage intro): forfeits it, nothing is recorded
+    campQuit: () => {
+      if (!camp) return;
+      const now = performance.now();
+      if (now >= quitArmUntil) { quitArmUntil = now + 2500; SFX.cursor(); return; } // first tap arms it
+      quitArmUntil = 0;
+      SFX.cursor(); AI.stop(); g = null; paused = false; setSplit(null); drags.clear();
+      coach = null; window.COACH = null;
+      setCamp(null); boardIdx = prefBoard; refreshBest(); screen = 'camp';
+    },
+    campBoard: () => { SFX.cursor(); lbMode = gameMode; lbHi = null; refreshLb(); screen = 'lb'; },
+    lbMode: (m) => { lbMode = m === 'turn' ? 'turn' : 'rts'; lbHi = null; refreshLb(); SFX.cursor(); },
+    lbBack: () => { SFX.cursor(); refreshBest(); screen = 'camp'; },
+    nameCycle: (i, d) => { nameChars[i] = (nameChars[i] + d + NAME_SET.length) % NAME_SET.length; SFX.cursor(); },
+    nameOk: () => {
+      if (!camp) { screen = 'camp'; return; }
+      SFX.select();
+      lsSet('cc-lb-name', nameStr());
+      const e = CAMPAIGN.addEntry(camp.mode, { n: nameStr(), s: camp.score, st: camp.cleared, cl: camp.won });
+      lbMode = camp.mode; lbHi = e ? e.t : null; refreshLb();
+      setCamp(null); screen = 'lb';
+    },
+    nameSkip: () => {
+      SFX.cursor();
+      if (camp) lbMode = camp.mode;
+      lbHi = null; refreshLb(); setCamp(null); screen = 'lb';
+    },
     // commit your plan. Every mode is a "ready" handshake that tickTurn turns
     // into a resolve once every side is in (or the clock runs out): online each
     // device readies its own side, local 2P has a GO per player (one GO used to
@@ -155,6 +326,14 @@
     cancelOnline: () => { SFX.cursor(); backToTitle(); },
     copyLink: () => { SFX.cursor(); NET.copyLink(); },
     shareLink: () => { SFX.cursor(); NET.shareLink(); },
+    coachNext: () => {
+      if (!coach) return;
+      const now = performance.now();
+      if (now - coach.at < 350) return; // a double-tap must not skip a card unread
+      coach.i++;
+      if (coach.i >= coach.cards.length) { coach = null; window.COACH = null; SFX.select(); }
+      else { coach.at = now; SFX.cursor(); }
+    },
     key: (ch) => { if (joinCode.length < 4) { joinCode += ch; SFX.cursor(); } else SFX.deny(); },
     del: () => { joinCode = joinCode.slice(0, -1); SFX.cursor(); },
     joinGo: () => { if (joinCode.length === 4) { SFX.select(); NET.join(joinCode); } else SFX.deny(); },
@@ -476,6 +655,7 @@
   canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     SFX.ensure();
+    if ((screen !== 'game' || (camp && camp.result)) && performance.now() < uiLockUntil) return;
     const { x, y, lx, ly } = toLogical(e);
     for (let i = UI.buttons.length - 1; i >= 0; i--) {
       const b = UI.buttons[i];
@@ -663,7 +843,11 @@
     SFX.select();
   }
 
-  function startPlan() { initTurnState(); SFX.cursor(); }
+  function startPlan() {
+    // a puzzle's turn limit: the last turn has played out without a win
+    if (g.limit && g.turnNo >= g.limit && !g.over) { g.timeUp = true; endGame(g, 1); return; }
+    initTurnState(); SFX.cursor();
+  }
 
   // dispatch the order book through the validating engine calls (illegal or now-
   // blocked orders are simply skipped), lowest id first for a stable resolution
@@ -802,6 +986,8 @@
     // 80s menu tune on the menus, silence during a match (idempotent each frame)
     if (screen === 'game') SFX.music.stop(); else SFX.music.start();
     UI.buttons.length = 0;
+    const key = screen + (camp && camp.result ? ':r' + camp.result.kind : '') + (paused ? ':p' : '');
+    if (key !== uiKey) { uiKey = key; uiLockUntil = now + UI_LOCK_MS; quitArmUntil = 0; }
     if (screen === 'game' && g) {
       // an opponent who backgrounded the app (phone locked, app switch) freezes
       // the match until they're back, instead of leaving their side defenceless
@@ -815,7 +1001,7 @@
         if (g.mode === 'turn' && g.phase === 'plan' && !g.over && g.planT <= 0 && guestGoTurn !== g.turnNo) {
           NET.send({ t: 'ready', tn: g.turnNo }); guestGoTurn = g.turnNo; setSplit(null);
         }
-      } else if (!paused && !away && !(netLost && NET.S.mode === 'host')) {
+      } else if (!paused && !away && !coach && !(netLost && NET.S.mode === 'host')) {
         if (g.mode === 'turn') tickTurn(dt);
         else { updateGame(g, dt); AI.tick(g, dt); }
       }
@@ -825,13 +1011,17 @@
         if (g.over || paused || !p || p.path || p.owner !== splitUI.pl || p.value < 2) setSplit(null);
         else if (splitUI.k >= p.value) splitUI.k = 0;
       }
+      if (camp && g.over && !camp.result) finishStage();
+      if (camp && !coach && !paused && !g.over && !camp.result) coachTick();
       window.SPLITUI = splitUI;
       buildDragVis();
       drawGame(ctx, g, paused, t);
       drawDragTrail(ctx, g, t);
       drawSplitUI(ctx, g, t);
       if (g.mode === 'turn') drawTurnHud(ctx, g, t);
+      if (camp && camp.lvl) drawLevelHud(ctx, g, camp, t);
       if (!g.over) AI.drawHud(ctx); // don't freeze a taunt/status on the win screen
+      if (coach && !g.over) drawCoach(ctx, coach, t);
       if (NET.S.mode === 'host') NET.hostTick(g, paused, now);
       if (away && !paused) drawOverlayMsg(ctx, 'OPPONENT AWAY', '#ffd23f', 'MATCH PAUSED UNTIL THEY RETURN');
       if (netLost) {
@@ -840,6 +1030,16 @@
       }
     } else if (screen === 'picker' && picker) {
       drawPicker(ctx, picker, t);
+    } else if (screen === 'vs') {
+      drawVs(ctx, boardIdx, t, gameMode);
+    } else if (screen === 'camp') {
+      drawCampMenu(ctx, t, gameMode, campBest);
+    } else if (screen === 'campintro' && camp) {
+      drawCampIntro(ctx, t, camp);
+    } else if (screen === 'nameentry' && camp) {
+      drawNameEntry(ctx, t, nameChars.map((i) => NAME_SET[i]), camp);
+    } else if (screen === 'lb') {
+      drawLeaderboard(ctx, t, lbMode, lbList, lbHi);
     } else if (screen === 'lobby') {
       drawLobby(ctx, boardIdx, t);
     } else if (screen === 'invite') {
@@ -847,7 +1047,7 @@
     } else if (screen === 'join') {
       drawJoin(ctx, joinCode, t);
     } else {
-      drawTitle(ctx, boardIdx, t, gameMode);
+      drawTitle(ctx, t, gameMode, campBest);
     }
   }
 

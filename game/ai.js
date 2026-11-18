@@ -13,6 +13,8 @@ window.AI = (() => {
     normal: { interval: 1.6, noise: 8, splitChance: 0.33, skip: 0.03, moves: 1, hunt: 0.35, safety: 0.25, combine: 0.2, eco: 0.2 },
     hard: { interval: 1.0, noise: 2, splitChance: 0.55, skip: 0, moves: 1, hunt: 1.1, safety: 0.6, combine: 0.5, eco: 0.5 },
     veryhard: { interval: 0.6, noise: 0, splitChance: 0.6, skip: 0, moves: 1, hunt: 1.4, safety: 0.85, combine: 0.95, eco: 0.8 },
+    still: { interval: 1e9, noise: 0, splitChance: 0, skip: 1, moves: 0, hunt: 0, safety: 0, combine: 0, eco: 0 },    // campaign dummy: never moves
+    script: { interval: 1e9, noise: 0, splitChance: 0, skip: 1, moves: 0, hunt: 0, safety: 0, combine: 0, eco: 0 },   // campaign puzzle foe: plays a fixed list of moves
     inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2, hunt: 1.6, safety: 1, combine: 1.2, eco: 1 }, // flawless + two moves a turn
   };
 
@@ -23,6 +25,8 @@ window.AI = (() => {
     { id: 'cpu-hard', label: 'CPU · HARD', name: 'CPU HARD', kind: 'bot', diff: 'hard' },
     { id: 'cpu-veryhard', label: 'CPU · VERY HARD', name: 'V.HARD', kind: 'bot', diff: 'veryhard' },
     { id: 'cpu-inhuman', label: 'CPU · INHUMAN', name: 'INHUMAN', kind: 'bot', diff: 'inhuman' },
+    { id: 'cpu-still', label: 'DUMMY', name: 'DUMMY', kind: 'bot', diff: 'still', hidden: true },
+    { id: 'cpu-script', label: 'PUZZLE FOE', name: 'FOE', kind: 'bot', diff: 'script', hidden: true },
     { id: 'claude-opus', label: 'CLAUDE OPUS 5.5', name: 'OPUS', kind: 'llm', provider: 'anthropic', model: 'claude-opus-5-5', fallbacks: true },
     { id: 'claude-sonnet', label: 'CLAUDE SONNET 5.5', name: 'SONNET', kind: 'llm', provider: 'anthropic', model: 'claude-sonnet-5-5', fallbacks: true },
     { id: 'claude-haiku', label: 'CLAUDE HAIKU 5.5', name: 'HAIKU', kind: 'llm', provider: 'anthropic', model: 'claude-haiku-5-5' },
@@ -62,14 +66,15 @@ window.AI = (() => {
     };
   }
 
-  function startSingle(rosterId) {
+  function startSingle(rosterId, opts) {
     const spec = byId(rosterId);
     if (!spec) return;
     S.gen++;
     S.watch = false;
     S.ctls = [null, makeCtl(spec, 1)];
     PLAYER_NAMES[0] = 'PLAYER 1';
-    PLAYER_NAMES[1] = spec.name;
+    PLAYER_NAMES[1] = (opts && opts.name) || spec.name;
+    if (opts && opts.script) S.ctls[1].script = opts.script;
   }
 
   function startWatch(idBottom, idTop) {
@@ -366,8 +371,43 @@ window.AI = (() => {
   // Turn-based planner: queue one order per idle piece for `own` — the best
   // legal move (greedily reserving destination cells so two pieces don't target
   // the same square), plus an optional split. Returns [{id,kind,k?,c,r}].
+  // campaign puzzle foe: step n of its script is a list of {from:[c,r], to:[c,r], k?} (k = split off a
+  // fragment of that size); an entry whose piece is gone or whose move is illegal is simply skipped
+  function scriptOrders(g, ctl) {
+    const step = (ctl.script || [])[(g.turnNo || 1) - 1];
+    const out = [];
+    if (!Array.isArray(step)) return out;
+    for (const s of step) {
+      const p = g.pieces.find((q) => q.owner === ctl.own && !q.path && q.col === s.from[0] && q.row === s.from[1]);
+      if (p) out.push(s.k && s.k < p.value ? { id: p.id, kind: 'split', k: s.k, c: s.to[0], r: s.to[1] } : { id: p.id, kind: 'move', c: s.to[0], r: s.to[1] });
+    }
+    return out;
+  }
+
+  // real-time version of the campaign script: flat entries {at, from, to, k?} fired once when game time
+  // reaches `at` (a piece still in flight waits; a missing piece or an illegal move is dropped)
+  function scriptTick(g, ctl) {
+    if (!Array.isArray(ctl.script)) return;
+    ctl.sdone = ctl.sdone || {};
+    for (let i = 0; i < ctl.script.length; i++) {
+      const s = ctl.script[i];
+      if (ctl.sdone[i] || s.at == null || g.time < s.at) continue;
+      const p = g.pieces.find((q) => q.owner === ctl.own && q.col === s.from[0] && q.row === s.from[1]);
+      if (!p) { ctl.sdone[i] = true; continue; }
+      if (p.path) continue;
+      ctl.sdone[i] = true;
+      const k = s.k && s.k < p.value ? s.k : 0;
+      const ghost = k ? Object.assign({}, p, { value: k }) : p;
+      if (!legalMoves(g, ghost).some((m) => m.c === s.to[0] && m.r === s.to[1])) continue;
+      if (k) splitMove(g, ctl.own, p.id, k, s.to[0], s.to[1]);
+      else commandMove(g, p, s.to[0], s.to[1]);
+    }
+  }
+
   function planTurn(g, own) {
     const spec = S.ctls[own] && S.ctls[own].spec;
+    if (spec && spec.diff === 'still') return [];
+    if (spec && spec.diff === 'script') return scriptOrders(g, S.ctls[own]);
     const d = DIFFS[(spec && spec.diff) || 'normal'];
     const sk = Object.assign({}, d, readEnv(g, own));
     const threats = findThreats(g, own);
@@ -730,6 +770,8 @@ window.AI = (() => {
   function tickCtl(g, ctl, dt) {
     if (ctl.tauntT > 0) ctl.tauntT -= dt;
     if (ctl.spec.kind === 'bot') {
+      if (ctl.spec.diff === 'script') { if (g.mode !== 'turn') scriptTick(g, ctl); return; }
+      if (ctl.spec.diff === 'still') return;
       ctl.timer -= dt;
       if (ctl.timer <= 0) { ctl.timer = DIFFS[ctl.spec.diff].interval; botAct(g, ctl); }
       return;

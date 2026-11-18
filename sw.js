@@ -8,6 +8,7 @@ const APP_SHELL = [
   'game/sound.js?v=1047',
   'game/boards.js?v=1047',
   'game/engine.js?v=1047',
+  'game/campaign.js?v=1047',
   'game/net.js?v=1047',
   'game/render.js?v=1047',
   'game/ai.js?v=1047',
