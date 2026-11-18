@@ -1362,7 +1362,7 @@ function drawTitle(ctx, t, mode, best) {
   glowText(ctx, '2 · PLAY', W / 2, 800, 22, '#ffd23f', 10);
   const bw = 760, bh = 170, bx = W / 2 - bw / 2;
   drawBigBtn(ctx, bx, 840, bw, bh, 'CAMPAIGN', '#52ff9d', t, false, 40);
-  glowText(ctx, best > 0 ? 'BEST ' + best : 'BEAT 10 CPUS · TOP THE BOARD', W / 2, 840 + bh - 36, 15, 'rgba(232,246,255,0.6)', 4);
+  glowText(ctx, best > 0 ? 'BEST ' + best : 'BEAT ' + CAMPAIGN.levels(mode).filter((l) => l.kind === 'battle').length + ' CPUS · TOP THE BOARD', W / 2, 840 + bh - 36, 15, 'rgba(232,246,255,0.6)', 4);
   UI.buttons.push({ x: bx, y: 840, w: bw, h: bh, action: ACTIONS.menuCampaign });
   drawBigBtn(ctx, bx, 1040, bw, bh, 'VS', '#ff3df0', t, false, 40);
   glowText(ctx, 'ARENAS · 2P · ONLINE · AI', W / 2, 1040 + bh - 36, 15, 'rgba(232,246,255,0.6)', 4);
@@ -1384,7 +1384,7 @@ const modeColor = (m) => (m === 'turn' ? '#ffd23f' : '#19e6ff');
 
 const KIND_COLORS = { lesson: '#52ff9d', puzzle: '#19e6ff' };
 const levelColor = (L) => (L.kind === 'battle' ? TIER_COLORS[L.ai] || '#ffd23f' : KIND_COLORS[L.kind] || '#aebcff');
-const kindLabel = (k) => (k === 'lesson' ? 'TRAINING' : k === 'puzzle' ? 'PUZZLES' : 'BATTLES');
+const kindLabel = (k) => (k === 'lesson' ? 'TRAINING' : k === 'puzzle' ? 'PUZZLES' : k === 'boss' ? 'BOSSES' : 'BATTLES');
 const kindOne = (k) => (k === 'lesson' ? 'TRAINING' : k === 'puzzle' ? 'PUZZLE' : 'BATTLE');
 
 function drawCampMenu(ctx, t, mode, best) {
@@ -1399,13 +1399,19 @@ function drawCampMenu(ctx, t, mode, best) {
   glowText(ctx, levels.length + ' LEVELS · ' + CAMPAIGN.LIVES + ' LIVES FOR BATTLES', W / 2, 238, 13, 'rgba(232,246,255,0.45)', 3);
 
   // the ladder, with a small header whenever the kind of level changes
-  const rw = 940, rh = 54, gap = 6, x = (W - rw) / 2;
+  // rows shrink to fit however many levels the ladder has (the buttons below need ~440px)
+  const grp = (L) => (L.boss ? 'boss' : L.kind);
+  const nKinds = levels.filter((L, i) => i === 0 || grp(L) !== grp(levels[i - 1])).length;
+  const avail = H - 470 - 268 - nKinds * 28;
+  const pitch = Math.max(36, Math.min(60, Math.floor(avail / levels.length)));
+  const rw = 940, gap = 6, rh = pitch - gap, x = (W - rw) / 2;
+  const big = rh >= 48;
   let y = 268, lastKind = null;
   levels.forEach((L, i) => {
-    if (L.kind !== lastKind) {
-      lastKind = L.kind;
-      glowText(ctx, kindLabel(L.kind), x + 6, y + 14, 14, 'rgba(232,246,255,0.5)', 0, 'left');
-      y += 30;
+    if (grp(L) !== lastKind) {
+      lastKind = grp(L);
+      glowText(ctx, kindLabel(lastKind), x + 6, y + 14, 14, 'rgba(232,246,255,0.5)', 0, 'left');
+      y += 28;
     }
     const col = levelColor(L);
     ctx.save();
@@ -1415,9 +1421,9 @@ function drawCampMenu(ctx, t, mode, best) {
     ctx.lineWidth = 2;
     rr(ctx, x, y, rw, rh, 10); ctx.fill(); ctx.stroke();
     ctx.restore();
-    glowText(ctx, String(i + 1).padStart(2, '0'), x + 46, y + rh / 2 + 1, 20, col, 5);
-    glowText(ctx, L.name, x + 96, y + rh / 2 + 1, 17, col, 3, 'left');
-    glowText(ctx, L.tag, x + rw - 22, y + rh / 2 + 1, 13, 'rgba(232,246,255,0.6)', 0, 'right');
+    glowText(ctx, String(i + 1).padStart(2, '0'), x + 46, y + rh / 2 + 1, big ? 20 : 17, col, 5);
+    glowText(ctx, L.name, x + 96, y + rh / 2 + 1, big ? 17 : 15, col, 3, 'left');
+    glowText(ctx, L.tag, x + rw - 22, y + rh / 2 + 1, big ? 13 : 12, 'rgba(232,246,255,0.6)', 0, 'right');
     y += rh + gap;
   });
 
@@ -1502,7 +1508,7 @@ function drawCampIntro(ctx, t, camp) {
   if (L.free) glowText(ctx, 'NO LIVES AT RISK · TRY AS OFTEN AS YOU LIKE', W / 2, yb, 14, '#52ff9d', 3);
   else {
     glowText(ctx, 'LIVES', W / 2 - 230, yb, 18, 'rgba(232,246,255,0.55)', 4);
-    drawHearts(ctx, W / 2 + 120, yb, camp.lives, CAMPAIGN.LIVES);
+    drawHearts(ctx, W / 2 + 120, yb, camp.lives, Math.max(CAMPAIGN.LIVES, camp.lives));
   }
   glowText(ctx, 'SCORE', W / 2 - 230, yb + 90, 18, 'rgba(232,246,255,0.55)', 4);
   glowText(ctx, String(camp.score), W / 2 + 120, yb + 90, 34, '#ffd23f', 10);
@@ -1664,6 +1670,7 @@ function drawCampResult(ctx, camp, t) {
   if (r.kind === 'draw') glowText(ctx, 'NO LIFE LOST · REPLAY', W / 2, H / 2 - 280, 20, 'rgba(232,246,255,0.7)', 6);
   else if (r.kind === 'lose') glowText(ctx, 'LIVES LEFT  ' + camp.lives, W / 2, H / 2 - 280, 22, '#ff5577', 8);
   else if (r.kind === 'retry') glowText(ctx, 'NO LIFE LOST · TRY AGAIN', W / 2, H / 2 - 280, 20, 'rgba(232,246,255,0.7)', 6);
+  else if (r.life) glowText(ctx, '+1 EXTRA LIFE · LIVES  ' + camp.lives, W / 2, H / 2 - 280, 22, '#ff5577', 8);
 
   let y = H / 2 - 220;
   const row = (label, val, c, size) => {

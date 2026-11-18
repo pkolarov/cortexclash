@@ -15,6 +15,7 @@ window.AI = (() => {
     veryhard: { interval: 0.6, noise: 0, splitChance: 0.6, skip: 0, moves: 1, hunt: 1.4, safety: 0.85, combine: 0.95, eco: 0.8 },
     still: { interval: 1e9, noise: 0, splitChance: 0, skip: 1, moves: 0, hunt: 0, safety: 0, combine: 0, eco: 0 },    // campaign dummy: never moves
     script: { interval: 1e9, noise: 0, splitChance: 0, skip: 1, moves: 0, hunt: 0, safety: 0, combine: 0, eco: 0 },   // campaign puzzle foe: plays a fixed list of moves
+    nemesis: { interval: 0.28, noise: 0, splitChance: 0.7, skip: 0, moves: 3, hunt: 1.9, safety: 1, combine: 1.4, eco: 1 }, // campaign boss tier: three flawless moves a turn
     inhuman: { interval: 0.4, noise: 0, splitChance: 0.65, skip: 0, moves: 2, hunt: 1.6, safety: 1, combine: 1.2, eco: 1 }, // flawless + two moves a turn
   };
 
@@ -25,6 +26,7 @@ window.AI = (() => {
     { id: 'cpu-hard', label: 'CPU · HARD', name: 'CPU HARD', kind: 'bot', diff: 'hard' },
     { id: 'cpu-veryhard', label: 'CPU · VERY HARD', name: 'V.HARD', kind: 'bot', diff: 'veryhard' },
     { id: 'cpu-inhuman', label: 'CPU · INHUMAN', name: 'INHUMAN', kind: 'bot', diff: 'inhuman' },
+    { id: 'cpu-nemesis', label: 'CPU · NEMESIS', name: 'NEMESIS', kind: 'bot', diff: 'nemesis', hidden: true },
     { id: 'cpu-still', label: 'DUMMY', name: 'DUMMY', kind: 'bot', diff: 'still', hidden: true },
     { id: 'cpu-script', label: 'PUZZLE FOE', name: 'FOE', kind: 'bot', diff: 'script', hidden: true },
     { id: 'claude-opus', label: 'CLAUDE OPUS 5.5', name: 'OPUS', kind: 'llm', provider: 'anthropic', model: 'claude-opus-5-5', fallbacks: true },

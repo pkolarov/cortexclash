@@ -107,6 +107,28 @@ function makeLevelGame(L) {
   return g;
 }
 
+// Campaign boss handicaps on top of a normal match (all optional):
+//   youE / foeE   castle energy to start with (capped at the castle's max)
+//   foeExtra      [[c,r,v]] extra enemy pieces (skipped if the cell is a wall / castle / occupied)
+//   youDrop       remove your n weakest pieces
+//   noSpawn       no power-ups appear;  spawnEvery  seconds between power-up spawns (real-time)
+function applyBattleMods(g, m) {
+  if (!m) return g;
+  if (m.youE) g.castles[0].energy = Math.min(m.youE, g.castles[0].max);
+  if (m.foeE) g.castles[1].energy = Math.min(m.foeE, g.castles[1].max);
+  for (const [c, r, v] of m.foeExtra || []) {
+    if (!inBounds(c, r) || g.walls.has(cellKey(c, r)) || castleAt(g, c, r) || stationaryAt(g, c, r)) continue;
+    g.pieces.push({ id: g.nextId++, owner: 1, value: v, col: c, row: r, path: null, prog: 0, from: null, shield: false, charged: false, boostUntil: -99 });
+  }
+  for (let i = 0; i < (m.youDrop || 0); i++) {
+    const mine = g.pieces.filter((p) => p.owner === 0).sort((a, b) => a.value - b.value);
+    if (mine.length > 1) g.pieces = g.pieces.filter((p) => p !== mine[0]);
+  }
+  g.rules = Object.assign({}, g.rules, { noSpawn: !!m.noSpawn });
+  if (m.spawnEvery) g.spawnEvery = m.spawnEvery;
+  return g;
+}
+
 function pieceById(g, id) { return g.pieces.find((p) => p.id === id) || null; }
 function stationaryAt(g, c, r) { return g.pieces.find((p) => !p.path && p.col === c && p.row === r) || null; }
 function anyMoving(g) { return g.pieces.some((p) => p.path); }
@@ -560,7 +582,7 @@ function updateGame(g, dt) {
   if (g.mode !== 'turn') {
     g.powerTimer -= dt;
     if (g.powerTimer <= 0) {
-      g.powerTimer = Math.max(4, window.TWEAKS.powerEvery);
+      g.powerTimer = Math.max(4, g.spawnEvery || window.TWEAKS.powerEvery);
       spawnPowerup(g);
     }
   }
@@ -740,6 +762,6 @@ function splitMove(g, pl, pieceId, k, c, r, force) {
 }
 
 Object.assign(window, {
-  COLS, ROWS, MAXV, makeGame, makeLevelGame, endGame, updateGame, spawnPowerup, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
+  COLS, ROWS, MAXV, makeGame, makeLevelGame, applyBattleMods, endGame, updateGame, spawnPowerup, tapCell, trySplit, splitMove, selectAt, commandPieceTo, dragLanding, speedOf,
   legalMoves, pieceById, piecePos, inBounds, cellKey, stationaryAt, castleAt, anyMoving,
 });

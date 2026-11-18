@@ -38,6 +38,19 @@
   // mirrors it for the renderer.
   let camp = null;
   function setCamp(v) { camp = v; window.CAMP = v; }
+  // An unfinished run is remembered (localStorage) so a score isn't lost if you quit or close the tab:
+  // the next time you open the campaign menu you are offered the initials screen for it.
+  function saveRun() {
+    if (camp && camp.score > 0) lsSet('cc-run', JSON.stringify({ m: camp.mode, s: camp.score, c: camp.cleared, w: !!camp.won }));
+  }
+  function clearRun() { try { localStorage.removeItem('cc-run'); } catch (e) {} }
+  function pendingRun() {
+    try {
+      const r = JSON.parse(lsGet('cc-run') || 'null');
+      if (r && (r.m === 'rts' || r.m === 'turn') && r.s > 0) return r;
+    } catch (e) {}
+    return null;
+  }
   window.CAMP = null;
   let campBest = 0;           // best score for the current mode, shown on menus
   let lbMode = gameMode;      // which leaderboard tab is showing
@@ -78,6 +91,7 @@
   function startGame(lvl) {
     // a campaign lesson / puzzle is a hand-built position; everything else is a normal match on the chosen arena
     g = lvl && lvl.kind !== 'battle' ? makeLevelGame(CAMPAIGN.levelSpec(lvl, gameMode)) : makeGame(boardIdx);
+    if (lvl && lvl.kind === 'battle' && lvl.mods) applyBattleMods(g, lvl.mods);
     if (lvl && lvl.limit && gameMode === 'turn') g.limit = lvl.limit;
     g.mode = gameMode;              // host/solo/2P; an online guest is overridden by the host's start packet
     if (g.mode === 'turn') initTurnState();
@@ -185,7 +199,10 @@
       const last = camp.stage === levels.length - 1;
       let bonus = 0;
       if (last) { bonus = CAMPAIGN.clearBonus(camp.lives); camp.score += bonus; camp.won = true; }
-      camp.result = { kind: last ? 'clear' : 'win', rows: sc.rows, bonus };
+      // checkpoint bosses give an extra life (up to LIVES + 2)
+      let life = false;
+      if (lvl.reward === 'life' && camp.lives < CAMPAIGN.LIVES + 2) { camp.lives++; life = true; }
+      camp.result = { kind: last ? 'clear' : 'win', rows: sc.rows, bonus, life };
     } else if (w === 1) {
       camp.tries++;
       const why = g.timeUp ? 'OUT OF TURNS' : 'DEFEATED';
@@ -197,6 +214,7 @@
     } else {
       camp.result = { kind: 'draw' }; // level finish: replay the level, no life lost
     }
+    saveRun();
   }
 
   // run is over (cleared or out of lives): name entry if the score places
@@ -207,7 +225,7 @@
       nameChars = [0, 1, 2].map((i) => Math.max(0, NAME_SET.indexOf(CAMPAIGN.cleanName(saved)[i] || 'A')));
       screen = 'nameentry';
     } else {
-      lbMode = camp.mode; lbHi = null; refreshLb(); setCamp(null); screen = 'lb';
+      clearRun(); lbMode = camp.mode; lbHi = null; refreshLb(); setCamp(null); screen = 'lb';
     }
   }
 
@@ -247,7 +265,16 @@
     setMode: (m) => { gameMode = m === 'turn' ? 'turn' : 'rts'; window.CC_MODE = gameMode; lsSet('cc-mode', gameMode); lbMode = gameMode; refreshBest(); SFX.cursor(); },
     // ---- top-level menu ----
     menuVs: () => { SFX.cursor(); screen = 'vs'; },
-    menuCampaign: () => { SFX.cursor(); refreshBest(); screen = 'camp'; },
+    menuCampaign: () => {
+      SFX.cursor();
+      const r = !camp && pendingRun();
+      if (r) { // a run that was closed / abandoned earlier: record its score now
+        setCamp({ mode: r.m, stage: 0, lives: 0, score: r.s, cleared: r.c | 0, won: !!r.w, result: null, tries: 0, seen: {}, lvl: null });
+        finishRun();
+        return;
+      }
+      clearRun(); refreshBest(); screen = 'camp';
+    },
     menuBack: () => { SFX.cursor(); picker = null; screen = 'title'; },
     // ---- campaign ----
     campStart: () => {
@@ -280,7 +307,7 @@
       else if (k === 'lose' || k === 'draw' || k === 'retry') { camp.result = null; AI.stop(); g = null; screen = 'campintro'; }
       else finishRun();
     },
-    // leave the run (pause menu, stage intro): forfeits it, nothing is recorded
+    // leave the run (pause menu, stage intro): the score so far is kept (initials + leaderboard if it places)
     campQuit: () => {
       if (!camp) return;
       const now = performance.now();
@@ -288,7 +315,8 @@
       quitArmUntil = 0;
       SFX.cursor(); AI.stop(); g = null; paused = false; setSplit(null); drags.clear();
       coach = null; window.COACH = null;
-      setCamp(null); boardIdx = prefBoard; refreshBest(); screen = 'camp';
+      if (camp.score > 0) { finishRun(); return; } // points earned: go to the leaderboard / initials
+      clearRun(); setCamp(null); boardIdx = prefBoard; refreshBest(); screen = 'camp';
     },
     campBoard: () => { SFX.cursor(); lbMode = gameMode; lbHi = null; refreshLb(); screen = 'lb'; },
     lbMode: (m) => { lbMode = m === 'turn' ? 'turn' : 'rts'; lbHi = null; refreshLb(); SFX.cursor(); },
@@ -300,12 +328,12 @@
       lsSet('cc-lb-name', nameStr());
       const e = CAMPAIGN.addEntry(camp.mode, { n: nameStr(), s: camp.score, st: camp.cleared, cl: camp.won });
       lbMode = camp.mode; lbHi = e ? e.t : null; refreshLb();
-      setCamp(null); screen = 'lb';
+      clearRun(); setCamp(null); screen = 'lb';
     },
     nameSkip: () => {
       SFX.cursor();
       if (camp) lbMode = camp.mode;
-      lbHi = null; refreshLb(); setCamp(null); screen = 'lb';
+      clearRun(); lbHi = null; refreshLb(); setCamp(null); screen = 'lb';
     },
     // commit your plan. Every mode is a "ready" handshake that tickTurn turns
     // into a resolve once every side is in (or the clock runs out): online each
